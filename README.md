@@ -2,6 +2,8 @@
 
 # 减肥教练 weight-loss-coach
 
+**在线试手势页（示例数据，要摄像头，用 Chrome）**：[电脑版](https://3000im.github.io/weight-loss-coach/) · [手机版](https://3000im.github.io/weight-loss-coach/mobile.html)
+
 一个给 Agent 用的 skill：第一次问答给你定计划，每天问你体重，每周按真实数据调下周的饮食和运动，你说「今天吃多了」它会算账告诉你是不是真吃多了。
 
 ![看板截图，示例数据](examples/dashboard.jpg)
