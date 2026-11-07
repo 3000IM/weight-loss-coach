@@ -34,12 +34,14 @@ import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
 import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
 
+const MOBILE=!!window.COACH_MOBILE; // mobile.html 由 build_mobile.py 从这个文件生成：手势、动效、判据是同一份，手机只换版面、摄像头和画质档位
 const MP='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
 const MODEL='https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const Q=new URLSearchParams(location.search);
 const NUM=(k,d)=>Q.has(k)?+Q.get(k):d;
-const DENSITY=NUM('n',.8), DIM=NUM('dim',.92);                 // 粒子倍数、人像亮度
+const DENSITY=NUM('n',MOBILE?.4:.8), DIM=NUM('dim',.92);                 // 粒子倍数、人像亮度
 const PIN=NUM('pin',.28), ROT=NUM('rot',1), HIT=NUM('hit',.5); // 捏合多近算捏住、旋转灵敏度、抓线半径（0 = 不抓线）
 const HOLD=NUM('hold',.8), EDGE=NUM('edge',.5), STILL=NUM('still',1.2); // 张手和握拳：停多久、离画面边缘多远、多慢算停住
 const FC=NUM('fc',1.5), BETA=NUM('beta',2), FOLLOW=NUM('follow',35);    // 跟手：1€ 滤波的两个参数、视图追手的速度
@@ -88,10 +90,11 @@ function euro(f,x,dt){
   return f.x+=a(FC+BETA*Math.abs(f.dx))*(x-f.x);
 }
 
-// ---------- 舞台：世界坐标高 10，宽按 1555:972
-const A=1555/972, WH=10, WW=WH*A, PPU=240;
-const renderer=new THREE.WebGLRenderer({canvas:$('gl'),powerPreference:'high-performance'});
-renderer.setClearColor(0,1);
+// ---------- 舞台：世界坐标高 10，宽按 1555:972；手机按屏幕比例，转屏时 fit() 会改 A 和 WW
+const WH=10, PPU=240;
+let A=1555/972, WW=WH*A;
+const renderer=new THREE.WebGLRenderer({canvas:$('gl'),powerPreference:'high-performance',alpha:MOBILE});
+renderer.setClearColor(0,MOBILE?0:1);
 const scene=new THREE.Scene(), cam3=new THREE.PerspectiveCamera(40,A,.1,100);
 cam3.position.z=(WH/2)/Math.tan(THREE.MathUtils.degToRad(20));cam3.updateMatrixWorld();
 const composer=new EffectComposer(renderer);
@@ -99,6 +102,10 @@ composer.addPass(new RenderPass(scene,cam3));
 const bloom=new UnrealBloomPass(new THREE.Vector2(256,256),.3,.4,.5);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
+// Safari 里 mix-blend-mode 混不到视频上（WebKit #286619），黑底会盖住人。手机改成亮度当透明度，叠出来和 screen 差不多
+if(MOBILE)composer.addPass(new ShaderPass({uniforms:{tDiffuse:{value:null}},
+  vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader:'uniform sampler2D tDiffuse;varying vec2 vUv;void main(){vec4 c=texture2D(tDiffuse,vUv);gl_FragColor=vec4(c.rgb,max(c.r,max(c.g,c.b)));}'}));
 
 const U={uTime:{value:0},uMorph:{value:0},uPx:{value:30},uOrigin:{value:new THREE.Vector3(0,0,0)},
   uTouch:{value:[0,1,2,3].map(()=>new THREE.Vector3(1e3,1e3,0))},uTouchAmp:{value:0},uScan:{value:new THREE.Vector4()},uScanOn:{value:0}};
@@ -177,10 +184,11 @@ const arc=(c,r,a0,a1,color,lw,dash=[])=>{c.strokeStyle=color;c.lineWidth=lw;c.li
 
 // ---------- 全息体：中间体重曲线，左翼离目标差，右翼腰围和每日目标
 const holo=new THREE.Group();holo.rotation.order='YXZ';scene.add(holo);
-const kgs=rows.flatMap(r=>[r.kg,planAt(r.t)??r.kg]), kgSpan=Math.max(1,Math.max(...kgs)-Math.min(...kgs)), yLo=Math.min(...kgs)-kgSpan*.3, yHi=Math.max(...kgs)+kgSpan*.25;
+const TS=TN||7, planTs=TN?rows.map(r=>r.t):[0,TS]; // 只有一条记录时横轴先留 7 天，计划线才画得出来
+const kgs=[...rows.map(r=>r.kg),...planTs.map(t=>planAt(t)??rows[0].kg)], kgSpan=Math.max(1,Math.max(...kgs)-Math.min(...kgs)), yLo=Math.min(...kgs)-kgSpan*.3, yHi=Math.max(...kgs)+kgSpan*.25;
 const kgStep=[1,2,5,10,20,50].find(s=>(yHi-yLo)/s<=5), tStep=7*Math.ceil(TN/28), tTicks=[];
 for(let t=0;t<TN-tStep/3;t+=tStep)tTicks.push(t);tTicks.push(TN);
-const X=t=>150+t/TN*1600, Y=kg=>980-(kg-yLo)/(yHi-yLo)*800;
+const X=t=>150+t/TS*1600, Y=kg=>980-(kg-yLo)/(yHi-yLo)*800;
 const local=(px,py)=>new THREE.Vector3(px/PPU-4,2.25-py/PPU,0);
 const curve=rows.map(r=>[X(r.t),Y(r.kg)]);
 
@@ -201,19 +209,19 @@ layer(holo,{w:8,h:4.5,n:15000,pos:[0,0,-.7],draw:c=>{
   L(c,[[1020,146],[1070,146]],'#dfe9ff',4,[10,10]);T(c,'PLAN 计划线',1082,158,34,'#dfe9ff',{w:600});
   for(const [x,y,dx,dy] of [[20,20,1,1],[1900,20,-1,1],[20,1060,1,-1],[1900,1060,-1,-1]])L(c,[[x+dx*70,y],[x,y],[x,y+dy*70]],CY,5);
 }});
-layer(holo,{w:8,h:4.5,n:6000,pos:[0,0,-.35],draw:c=>PLAN.rate&&L(c,rows.map(r=>[X(r.t),Y(planAt(r.t))]),'#dfe9ff',4,[12,14])});
+layer(holo,{w:8,h:4.5,n:6000,pos:[0,0,-.35],draw:c=>PLAN.rate&&L(c,planTs.map(t=>[X(t),Y(planAt(t))]),'#dfe9ff',4,[12,14])});
 layer(holo,{w:8,h:4.5,n:22000,jz:.4,crisp:false,draw:c=>{
   c.beginPath();curve.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.lineTo(X(TN),980);c.lineTo(X(0),980);c.closePath();
   const g=c.createLinearGradient(0,250,0,980);g.addColorStop(0,'rgba(57,230,255,.75)');g.addColorStop(1,'rgba(57,120,255,.03)');c.fillStyle=g;c.fill();
 }});
-layer(holo,{w:8,h:4.5,n:28000,draw:c=>{
+layer(holo,{w:8,h:4.5,n:TN?28000:3000,draw:c=>{ // 只有一条记录时墨迹很少，粒子还那么多会糊成一团
   L(c,curve,CY,7);
-  for(const [x,y] of curve){c.fillStyle=CY;c.beginPath();c.arc(x,y,11,0,TAU);c.fill()}
-  T(c,rows[0].kg.toFixed(1),X(0)+6,Y(rows[0].kg)-28,56,WH_,{f:MONO});
+  for(const [x,y] of curve){c.fillStyle=CY;c.beginPath();c.arc(x,y,TN?11:24,0,TAU);c.fill()}
+  T(c,rows[0].kg.toFixed(1),X(0)+(TN?6:44),Y(rows[0].kg)-(TN?28:40),TN?56:80,WH_,{f:MONO,w:TN?700:800});
   const jump=r=>{const i=rows.indexOf(r);return r.kg-rows[i-1].kg};
   const hot=rows.filter((r,i)=>i&&r.note).sort((a,b)=>jump(b)-jump(a))[0]; // 标出涨得最多、又写了备注的那天
   if(hot){T(c,hot.kg.toFixed(1),X(hot.t),Y(hot.kg)-66,56,WH_,{a:'center',f:MONO});T(c,hot.note.slice(0,10),X(hot.t),Y(hot.kg)-24,34,'#ffd9a0',{a:'center',w:600})}
-  T(c,last.kg.toFixed(1),X(TN),Y(last.kg)+76,72,WH_,{a:'right',f:MONO,w:800});
+  if(TN)T(c,last.kg.toFixed(1),X(TN),Y(last.kg)+76,72,WH_,{a:'right',f:MONO,w:800});
 }});
 layer(holo,{w:8,h:4.5,n:20000,pos:[0,0,.35],draw:c=>L(c,rows.filter(r=>r.avg).map(r=>[X(r.t),Y(r.avg)]),AM,12)});
 
@@ -239,16 +247,25 @@ layer(right,{w:3.7,h:5.1,n:38000,draw:(c,w)=>{
     const v=T(c,val,52,y+218,val.length>5?118:150,WH_,{w:800,sp:-2});T(c,unit,52+v+16,y+218,44,col,{w:600});
     T(c,sub,56,y+290,32,'#cfe6ff',{w:500});
   };
-  card(20,'WAIST','腰围',waistNow?.toFixed(1)??'--','cm',waistNow==null?'还没量过腰围':`比起始 ${waistNow>waist0?'+':'−'}${Math.abs(waistNow-waist0).toFixed(1)} cm`,'#7dffc2');
+  card(20,'WAIST','腰围',waistNow?.toFixed(1)??'--','cm',waistNow==null?'还没量过腰围':waistNow===waist0?'起始腰围':`比起始 ${waistNow>waist0?'+':'−'}${Math.abs(waistNow-waist0).toFixed(1)} cm`,'#7dffc2');
   const bars=waists.slice(-4).map(r=>r.waist), lo=Math.min(...bars), hi=Math.max(...bars);
   const bx=w-250;bars.forEach((v,i)=>{const bh=68+(v-lo)/(hi-lo||1)*84;c.fillStyle='#7dffc2';c.fillRect(bx+i*50,350-bh,32,bh)});
   card(420,'CALORIES','每日热量',String(PLAN.kcal||'--'),'kcal','每日目标 DAILY TARGET',AM);
   card(820,'PROTEIN','每日蛋白',PLAN.protein||'--','g','每日目标 DAILY TARGET',CY);
 }});
 
+// 手机转屏时重排，竖屏把两翼挪到曲线下面。K 和 OY 只管版面，手势算出来的缩放和位移照旧
+let K=1,OY=0;
+function layout(){
+  const tall=A<1;
+  K=tall?WW/8.6:Math.min(1.15,WW/17);OY=tall?1.1+2.53*K:.8;
+  left.position.set(tall?-2.1:-6.15,tall?-4.75:.05,.5);left.rotation.y=tall?0:.52;
+  right.position.set(tall?2.15:6.15,tall?-4.95:.05,.5);right.rotation.y=tall?0:-.52;
+}
+
 // ---------- 状态
 const start={x:0,y:-.9,s:.92,rx:0,ry:0};
-const S=window.S={phase:'idle',mode:'',m:0,charge:0,hands:[],err:'',status:'LOADING',camLabel:'',dpr:Math.min(devicePixelRatio,2),chrome:true,
+const S=window.S={phase:'idle',mode:'',m:0,charge:0,hands:[],err:'',status:'LOADING',camLabel:'',dpr:Math.min(devicePixelRatio,MOBILE?1.5:2),chrome:true,mirror:true,facing:'user',tier:0,detected:0,
   rings:[],sparks:[],pops:[],flash:0,log:[],cur:{...start},t:{...start},ref:null,scan:null,fps:0,lastDissolve:-1e4,lockAt:-1e4,boomed:true,now:0,pair:[],pinchAt:-1e4,duo:false,latch:false};
 const NAMES={summon:['SUMMON','召唤','双手唰地拉开，或单手张开停住'],rotate:['ROTATE','旋转','捏住空白处，拖动'],scan:['READ','读数','捏住一根线，沿线滑'],stretch:['ZOOM','缩放','两只手都捏住，拉开合拢'],lock:['RELEASE','松手','手指一分开就定住'],dissolve:['DISSOLVE','消散','双手合拢，或握拳停住']};
 S.look=1;S.expo=1;
@@ -272,38 +289,46 @@ function dissolve(p,duo=false){S.phase='dissolve';S.duo=duo;S.latch=duo;S.ref=nu
 
 // ---------- 摄像头（或 ?video= 测试视频）和手势模型，都只在本机跑，不上传不存帧
 let landmarker=null,lastVT=-1;
+const CAM_TIP='请在浏览器里允许摄像头；不行就用 Safari / Chrome 直接打开';
 async function startCam(id){
   try{
     if(Q.get('video')){video.src=Q.get('video');video.loop=true;await video.play();S.camLabel='VIDEO FILE';return}
     video.srcObject?.getTracks().forEach(t=>t.stop());
     S.camLabel='等待摄像头权限';
     // ego lite 安装包里没有摄像头用途声明，点了允许也可能一直黑屏，这时给一句提示
-    setTimeout(()=>{if(video.readyState<2&&!S.err)S.err='还没拿到摄像头。点了允许还是黑屏，换 Chrome 打开'},20000);
-    const s=await navigator.mediaDevices.getUserMedia({audio:false,video:{width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30},...(id?{deviceId:{exact:id}}:{})}});
-    video.srcObject=s;await video.play();S.camLabel=s.getVideoTracks()[0].label;S.err='';
+    setTimeout(()=>{if(S.camLabel==='等待摄像头权限'&&video.readyState<2&&!S.err)S.err=MOBILE?CAM_TIP:'还没拿到摄像头。点了允许还是黑屏，换 Chrome 打开'},20000);
+    const s=await navigator.mediaDevices.getUserMedia({audio:false,video:{width:{ideal:MOBILE?1280:1920},height:{ideal:MOBILE?720:1080},frameRate:{ideal:30},...(MOBILE?{facingMode:S.facing}:{}),...(id?{deviceId:{exact:id}}:{})}});
+    video.srcObject=s;await video.play();S.camLabel=MOBILE?(S.facing==='user'?'前置':'后置'):s.getVideoTracks()[0].label;S.err='';
+    S.mirror=!MOBILE||S.facing==='user';video.style.transform=S.mirror?'':'none'; // 后置摄像头不镜像，不然手往右、画面往左
   }catch(e){
     S.camLabel='NO CAMERA';
-    S.err=e.name==='NotAllowedError'?'摄像头没给权限：地址栏左边点开允许，再刷新':`摄像头打不开（${e.name}）：换 Chrome 打开`;
+    S.err=MOBILE?CAM_TIP:e.name==='NotAllowedError'?'摄像头没给权限：地址栏左边点开允许，再刷新':`摄像头打不开（${e.name}）：换 Chrome 打开`;
   }
 }
 async function nextCam(){
+  if(MOBILE){S.facing=S.facing==='user'?'environment':'user';return startCam()}
   const ds=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
   if(ds.length<2)return;
   const cur=video.srcObject?.getVideoTracks()[0]?.getSettings().deviceId;
   const n=ds[(ds.findIndex(d=>d.deviceId===cur)+1)%ds.length];
   localStorage.setItem('cam',n.deviceId);startCam(n.deviceId);
 }
+// 手机：模型内嵌在文件里。GPU 出错可能连页面一起崩，JS 接不住，所以开始前留个记号，跑稳了擦掉，刷新回来记号还在就改用 CPU
+function modelBytes(){const s=atob($('model').textContent.trim()),b=new Uint8Array(s.length);for(let i=0;i<s.length;i++)b[i]=s.charCodeAt(i);return b}
+function gpuMark(v){try{return v?sessionStorage.setItem('gpu',v):sessionStorage.getItem('gpu')}catch{}} // 沙箱 iframe 里读存储会报错
 async function startHands(){
   try{
     const {FilesetResolver,HandLandmarker}=await import(MP+'/vision_bundle.mjs');
     const fs=await FilesetResolver.forVisionTasks(MP+'/wasm');
-    landmarker=await HandLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:'GPU'},runningMode:'VIDEO',numHands:2});
+    if(MOBILE){if(gpuMark()==='try')S.cpu=true;gpuMark('try')} // 上次开到一半页面崩了，这次不碰 GPU
+    const make=delegate=>HandLandmarker.createFromOptions(fs,{baseOptions:{...(MOBILE?{modelAssetBuffer:modelBytes()}:{modelAssetPath:MODEL}),delegate},runningMode:'VIDEO',numHands:2});
+    landmarker=await (S.cpu?make('CPU'):make('GPU').catch(e=>{if(!MOBILE)throw e;S.cpu=true;return make('CPU')}));
     S.status='TRACKING';
   }catch(e){S.status='NO MODEL';S.err='手势模型加载失败，检查网络后刷新：'+e.message}
 }
 function toWorld(q){ // 视频按 cover 铺满舞台再左右镜像，这里算到世界坐标
   const av=(video.videoWidth||16)/(video.videoHeight||9);
-  const fx=av>A?.5+((1-q.x)-.5)*(av/A):1-q.x, fy=av>A?q.y:.5+(q.y-.5)*(A/av);
+  const mx=S.mirror?1-q.x:q.x, fx=av>A?.5+(mx-.5)*(av/A):mx, fy=av>A?q.y:.5+(q.y-.5)*(A/av);
   return {x:(fx-.5)*WW,y:(.5-fy)*WH};
 }
 const centre=(pts,ids)=>{let x=0,y=0;for(const k of ids){x+=pts[k].x/ids.length;y+=pts[k].y/ids.length}return {x,y}};
@@ -311,7 +336,12 @@ function track(now){
   const vt=Q.get('video')?now:video.currentTime;
   if(!landmarker||video.readyState<2||vt===lastVT)return;
   lastVT=vt;
-  const r=landmarker.detectForVideo(video,performance.now());
+  let r;
+  try{r=landmarker.detectForVideo(video,performance.now())}
+  catch(e){if(!MOBILE||S.cpu)throw e;S.cpu=true;landmarker=null;S.status='LOADING';startHands();return}
+  if(MOBILE&&++S.detected===90)gpuMark('ok');
+  // 手机竖屏只是把视频两边裁掉了，手出了屏幕还在摄像头画面里，模型照样准，所以左右算到摄像头的真实边缘；余量按宽度折算，不然两只手没地方唰
+  const xMax=MOBILE?Math.max(WW/2-EDGE*Math.min(1,A*972/1555),WH/2*(video.videoWidth||16)/(video.videoHeight||9)):WW/2-EDGE;
   const prev=S.hands;prev.forEach(h=>h.used=false);
   const seen=[];
   const next=r.landmarks.map((lm,i)=>{
@@ -334,7 +364,7 @@ function track(now){
     h.grip=centre(h.pts,[5,9]);  // 拖动用指根：捏合、松开时指尖会动，指根不动，松手那一下视图不会被带歪
     h.speed+=(Math.hypot(palm.x-h.raw.x,palm.y-h.raw.y)/dt/Math.max(.3,Math.hypot(raw[9].x-raw[0].x,raw[9].y-raw[0].y))-h.speed)*Math.min(1,dt/.15); // 每秒移动几个手掌长
     h.raw=palm;
-    h.inFrame=raw.every(p=>Math.abs(p.x)<WW/2-EDGE&&Math.abs(p.y)<WH/2-EDGE); // 手完整在画面里，离边有余量。碰到边缘时模型靠猜，张手握拳都不可信
+    h.inFrame=raw.every(p=>Math.abs(p.x)<xMax&&Math.abs(p.y)<WH/2-EDGE); // 手完整在画面里，离边有余量。碰到边缘时模型靠猜，张手握拳都不可信
     h.gap=gapOf(r.worldLandmarks[i],raw);
     const g=classify(r.worldLandmarks[i],raw,h.g==='pinch');
     if(g!==h.cand){h.cand=g;h.candAt=now}
@@ -359,6 +389,7 @@ S.lines=LINES;
 function linesOnScreen(){for(const l of LINES)l.scr=l.pts.map(q=>{const p=project(holo.localToWorld(new THREE.Vector3(X(q.r.t)/PPU-4,2.25-Y(q.kg)/PPU,l.z)));return {x:(p.x-.5)*WW,y:(.5-p.y)*WH}})}
 function nearestOnLine(l,p){ // 线上离 p 最近的点；i 是最近的那一天
   let best={d:1e9,l};
+  if(l.scr.length===1){const [a]=l.scr;return {d:Math.hypot(p.x-a.x,p.y-a.y),x:a.x,y:a.y,l,i:0}} // 只有一条记录：线就是一个点
   for(let i=1;i<l.scr.length;i++){
     const a=l.scr[i-1],b=l.scr[i],dx=b.x-a.x,dy=b.y-a.y,u=clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/(dx*dx+dy*dy||1),0,1),x=a.x+dx*u,y=a.y+dy*u,d=Math.hypot(p.x-x,p.y-y);
     if(d<best.d)best={d,x,y,l,i:u<.5?i-1:i};
@@ -377,7 +408,7 @@ const TURN=.25; // 手移动 1 个单位（画面高的 1/10）转多少弧度�
 function duoSwipe(now,hs){
   if(hs.some(h=>h.g==='pinch'||h.cand==='pinch'))S.pinchAt=now;
   const H=S.pair;while(H[0]&&now-H[0].at>400)H.shift();
-  if(!hs.length)S.latch=false;
+  if(!hs.length){S.latch=false;H.length=0} // 手都放下了，窗口里的旧样本不算数，不然紧接着举一只手会被当成并拢
   if(hs.length===1&&H.at(-1)?.n===2&&H.at(-1).near&&S.phase==='idle')S.latch=true; // 两只手并到一起，模型只看得到一只：还是在准备唰
   if(!hs.length||hs.length>2)return null;
   const [l,r]=hs.length<2||hs[0].palm.x<hs[1].palm.x?[hs[0],hs.at(-1)]:[hs[1],hs[0]], isOpen=h=>h.g==='open'||h.cand==='open';
@@ -389,7 +420,7 @@ function duoSwipe(now,hs){
   for(const o of H){
     if(!o.open)continue;
     const sign=c.gap>o.gap?1:-1, big=sign>0?c:o, dg=Math.abs(c.gap-o.gap), span=(now-o.at)/1000;
-    if(dg<SWEEP*unit||dg<SWIPE*unit*span||!(c.near||o.near))continue;
+    if(dg<SWEEP*unit*(A<1?.75:1)||dg<SWIPE*unit*span||!(c.near||o.near))continue; // 手机竖屏只装得下四五个手掌宽，行程放宽到 3/4，不然手还没拉够就出画面了
     const nx=(big.r.x-big.l.x)/big.gap, ny=(big.r.y-big.l.y)/big.gap;
     if(Math.abs(nx)<Math.abs(ny))continue; // 要往两侧，不算上下
     const out=(a,b)=>(b.x-a.x)*nx+(b.y-a.y)*ny;
@@ -476,7 +507,7 @@ function logic(now,dt){
   U.uScanOn.value+=(scanOn-U.uScanOn.value)*Math.min(1,dt*8);
   const k=1-Math.exp(-dt*(S.ref?FOLLOW:7)), c=S.cur; // 手的抖动已经被 1€ 压掉了，捏住时这里只补 30 帧到 60 帧的间隔，不再加延迟
   for(const key of ['x','y','s','rx','ry'])c[key]+=(t[key]-c[key])*k;
-  holo.position.set(c.x,c.y,0);holo.scale.setScalar(c.s);
+  holo.position.set(c.x,c.y+OY,0);holo.scale.setScalar(c.s*K);
   holo.rotation.set(c.rx,c.ry,0);
   spinA.rotation.z+=dt*.28;spinB.rotation.z-=dt*.6;
   holo.updateMatrixWorld(true);
@@ -495,7 +526,7 @@ const sprite=col=>{const s=document.createElement('canvas');s.width=s.height=64;
 const SP={[CY]:sprite(CY),[AM]:sprite(AM),[PK]:sprite(PK),[GR]:sprite(GR)};
 const GCOL={open:CY,fist:AM,pinch:GR,none:CY};
 function drawHud(now,dt){
-  const c=hx,W=hud.width,H=hud.height,u=H/1080,time=now/1000;
+  const c=hx,W=hud.width,H=hud.height,u=MOBILE?.72*S.dpr:H/1080,time=now/1000;
   const px=p=>(p.x/WW+.5)*W, py=p=>(.5-p.y/WH)*H;
   const font=(size,w=600,f=MONO)=>c.font=`${w} ${size*u}px ${f}`;
   c.clearRect(0,0,W,H);c.textAlign='left';c.lineCap='round';c.shadowColor='rgba(0,0,0,.8)';c.shadowBlur=5*u;
@@ -505,17 +536,18 @@ function drawHud(now,dt){
     font(24,800,SANS);c.fillStyle=WH_;c.fillText('WEIGHT LOSS COACH',44*u,62*u);
     font(17);c.fillStyle='#bfe6ff';c.fillText('减肥教练 · '+DATA_LABEL,44*u,90*u);
     c.fillText(`${S.status}  HANDS ${S.hands.length}  ${S.fps} FPS  ${S.camLabel}`,44*u,116*u);
-    const keys=Object.entries(NAMES),bw=262*u,gap=8*u,bh=56*u,by=H-bh-36*u;
+    const keys=Object.entries(NAMES).filter(([k])=>!MOBILE||(S.phase==='idle'||S.phase==='summon'?k==='summon':k!=='summon'&&k!=='lock')); // 手机放不下六个，只列现在能做的
+    const z=MOBILE?1.4:1,cols=!MOBILE?keys.length:keys.length<2?1:W>H?4:2,nr=Math.ceil(keys.length/cols),gap=8*u,bh=56*u*z,bw=MOBILE?(W-(cols+1)*gap)/cols:262*u,bot=H-bh-(MOBILE?gap:36*u);
     keys.forEach(([k,[en,cn,how]],i)=>{
-      const on=S.mode===k,bx=W/2-(keys.length*bw+(keys.length-1)*gap)/2+i*(bw+gap);
+      const on=S.mode===k,bx=W/2-(cols*bw+(cols-1)*gap)/2+i%cols*(bw+gap),by=bot-(nr-1-(i/cols|0))*(bh+gap);
       c.fillStyle=on?'rgba(57,230,255,.94)':'rgba(6,16,28,.6)';c.fillRect(bx,by,bw,bh);
-      font(17,800);c.fillStyle=on?'#00131c':WH_;c.fillText(en,bx+12*u,by+23*u);
-      font(16,600,SANS);c.fillText(cn,bx+bw-12*u-c.measureText(cn).width,by+23*u);
-      font(14,500,SANS);c.fillStyle=on?'#00131c':'#bfe6ff';c.fillText(how,bx+12*u,by+45*u);
+      font(17*z,800);c.fillStyle=on?'#00131c':WH_;c.fillText(en,bx+12*u,by+23*u*z);
+      font(16*z,600,SANS);c.fillText(cn,bx+bw-12*u-c.measureText(cn).width,by+23*u*z);
+      font(14*z,500,SANS);c.fillStyle=on?'#00131c':'#bfe6ff';c.fillText(how,bx+12*u,by+45*u*z);
     });
-    if(S.mode&&(S.mode!=='lock'||now-S.lockAt<900)){const [en,cn]=NAMES[S.mode];c.textAlign='center';font(38,800,SANS);c.fillStyle=WH_;c.fillText(en,W/2,70*u);font(20,600,SANS);c.fillStyle=CY;c.fillText(cn,W/2,100*u);c.textAlign='left'}
+    if(S.mode&&(S.mode!=='lock'||now-S.lockAt<900)){const [en,cn]=NAMES[S.mode],ty=MOBILE&&H>W?160:70;c.textAlign='center';font(38,800,SANS);c.fillStyle=WH_;c.fillText(en,W/2,ty*u);font(20,600,SANS);c.fillStyle=CY;c.fillText(cn,W/2,(ty+30)*u);c.textAlign='left'}
   }
-  if(S.err){c.textAlign='center';font(30,700,SANS);c.fillStyle=AM;c.fillText(S.err,W/2,H*.12);c.textAlign='left'}
+  if(S.err&&!MOBILE){c.textAlign='center';font(30,700,SANS);c.fillStyle=AM;c.fillText(S.err,W/2,H*.12);c.textAlign='left'}
   c.shadowBlur=0;c.globalCompositeOperation='lighter';
   S.sparks=S.sparks.filter(s=>(s.life-=dt)>0);
   for(const s of S.sparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy-=dt*.8;const r=(1.6+s.life*5.6)*u;c.globalAlpha=Math.min(1,s.life*1.6);c.drawImage(SP[CY],px(s)-r,py(s)-r,r*2,r*2)}
@@ -597,6 +629,7 @@ function drawHud(now,dt){
 
 // ---------- 尺寸、主循环、按键
 function fit(){
+  if(MOBILE){A=innerWidth/innerHeight;WW=WH*A;cam3.aspect=A;cam3.updateProjectionMatrix();layout()}
   const w=Math.min(innerWidth,innerHeight*A),h=w/A;
   stage.style.width=w+'px';stage.style.height=h+'px';S.Hc=h;
   renderer.setPixelRatio(S.dpr);renderer.setSize(w,h,false);
@@ -604,6 +637,15 @@ function fit(){
   hud.width=w*S.dpr;hud.height=h*S.dpr;U.uPx.value=h*S.dpr*.03;
 }
 addEventListener('resize',fit);fit();
+// 手机掉帧就往下走一档，不往回升。粒子是随机撒的，只画前面一部分，形状不变
+function lower(){
+  if(S.tier>=3)return;
+  const q=[1,.6,.4,.25][++S.tier];
+  scene.traverse(o=>{if(o.isPoints)o.geometry.setDrawRange(0,o.geometry.attributes.position.count*q|0)});
+  if(S.tier>=2){S.dpr=Math.max(1,S.dpr*.8);fit()}
+  if(S.tier===3)bloom.enabled=false;
+}
+S.lower=lower;
 let prevT=performance.now(),fpsN=0,fpsAt=prevT;
 function frame(raf){
   requestAnimationFrame(frame);
@@ -612,10 +654,12 @@ function frame(raf){
   const dt=Math.min(.05,Math.max(0,(now-prevT)/1000));prevT=now;
   U.uTime.value+=dt;
   const c0=performance.now();track(now);const c1=performance.now();logic(now,dt);composer.render();drawHud(now,dt);S.ms=[c1-c0,performance.now()-c1].map(v=>+v.toFixed(1));
+  if(MOBILE)syncUI();
   fpsN++;
   if(now-fpsAt>1500){
     S.fps=Math.round(fpsN*1000/(now-fpsAt));fpsN=0;fpsAt=now;
-    if(S.fps<26&&S.dpr*S.Hc>1200){S.dpr*=.85;fit()} // 录屏时掉帧就自动降一点分辨率
+    if(MOBILE){if(S.fps<24&&!Q.get('video'))lower()}
+    else if(S.fps<26&&S.dpr*S.Hc>1200){S.dpr*=.85;fit()} // 录屏时掉帧就自动降一点分辨率
   }
 }
 addEventListener('keydown',e=>{
@@ -627,6 +671,32 @@ addEventListener('keydown',e=>{
   if(k==='x'&&S.phase==='holo')dissolve({x:0,y:-1});
 });
 addEventListener('error',e=>{S.err='页面出错：'+e.message});
+// 手机没有键盘，按键换成屏幕上的按钮（外壳在 build_mobile.py 里）
+function syncUI(){
+  if(S.err!==S.tip){S.tip=S.err;$('tip').hidden=!S.err;$('tipText').textContent=S.err}
+  $('boot').hidden=S.status!=='LOADING'||!!S.err;
+  $('bAct').hidden=!!video.srcObject||!!Q.get('video');
+  $('bAct').textContent=S.phase==='holo'||S.phase==='summon'?'消散':'召唤';
+}
+if(MOBILE){
+  const root=document.documentElement, full=root.requestFullscreen||root.webkitRequestFullscreen, leave=document.exitFullscreen||document.webkitExitFullscreen;
+  const act=()=>S.phase==='idle'?summon({x:0,y:0}):S.phase==='holo'&&dissolve({x:0,y:-1});
+  $('bFlip').onclick=nextCam;
+  $('bHide').onclick=()=>{S.chrome=!S.chrome};
+  $('bAct').onclick=act;
+  $('bFull').hidden=!full; // iPhone Safari 没有网页全屏，横屏时工具栏会自己收起
+  $('bFull').onclick=()=>document.fullscreenElement||document.webkitFullscreenElement?leave.call(document):Promise.resolve(full.call(root)).catch(()=>{});
+  $('bRetry').onclick=()=>{S.err='';startCam()};
+  $('bDemo').onclick=()=>{S.err='';act()};
+  $('bSave').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['<!doctype html>'+root.outerHTML],{type:'text/html'}));a.download='weight-loss-holo.html';a.click()};
+  // 手势不碰屏幕，屏幕会自己熄；切走回来摄像头可能断了
+  const wake=()=>navigator.wakeLock?.request('screen').catch(()=>{});wake();
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden)return;
+    wake();
+    if(video.srcObject)video.srcObject.getVideoTracks()[0]?.readyState==='live'?video.play().catch(()=>{}):startCam();
+  });
+}
 
 if(Q.has('test')){ // 打开 ?test 跑一遍，结果写到标题和 window.__selftest
   const fails=[],eq=(a,b,n)=>{if(a!==b)fails.push(`${n}: ${a} != ${b}`)};
@@ -648,6 +718,8 @@ if(Q.has('test')){ // 打开 ?test 跑一遍，结果写到标题和 window.__se
     eq(classify(hand(['pinch','c','c','c'],rot,[.06,.1])),'none','just released '+rot);
     eq(classify(hand(['up','c','c','c'],rot)),'none','point '+rot);
   }
+  // 前置镜像，后置不镜像
+  eq(toWorld({x:.25,y:.5}).x>0,true,'front camera is mirrored');S.mirror=false;eq(toWorld({x:.25,y:.5}).x<0,true,'rear camera is not mirrored');S.mirror=true;
   // 滤波：静止时抖动压到一半以下，匀速 5 单位/秒时落后不超过 .15 单位（30 毫秒）
   let seed=1;const noise=()=>{let n=0;for(let i=0;i<6;i++){seed=seed*16807%2147483647;n+=seed/2147483647-.5}return n*.03};
   const sd=a=>{const m=a.reduce((p,q)=>p+q,0)/a.length;return Math.sqrt(a.reduce((p,q)=>p+(q-m)**2,0)/a.length)};
@@ -723,6 +795,7 @@ if(Q.has('test')){ // 打开 ?test 跑一遍，结果写到标题和 window.__se
   // 并拢后模型只看到一只：不走停住那条路；放下再举才算单手；并拢后分开走唰
   l=hand2('open',-.5);r=hand2('open',.5);still([l,r]);run([l],n+2);eq(S.phase,'idle','merged hands wait for the swipe');eq(l.why,'向两侧唰地拉开','merged hint');
   run([],1);run([l],n+2);eq(S.phase,'summon','hand down and up holds again');
+  l=hand2('open',-.5);r=hand2('open',.5);still([l,r]);run([],1);run([l],n+2);eq(S.phase,'summon','one hand right after both went down is not a merge');
   // 假手：闪出来一只，真手自己没动，不算
   l=hand2('open',-3);l.speed=9;still([l]);r=hand2('open',4);run([l,r],4);eq(S.phase,'idle','ghost hand');
   l=hand2('open',0);l.speed=9;still([l]);r=hand2('open',3);r.frames=1;swing(l,r,[0,-2],[3,3],4);eq(S.phase,'idle','one-frame ghost while the real hand moves');
@@ -749,7 +822,7 @@ if(Q.has('test')){ // 打开 ?test 跑一遍，结果写到标题和 window.__se
   window.__selftest=fails;document.title=fails.length?'SELFTEST FAIL':'SELFTEST OK';console.log(document.title,fails);
 }
 requestAnimationFrame(frame);
-startCam(localStorage.getItem('cam'));startHands();
+startCam(MOBILE?null:localStorage.getItem('cam'));startHands();
 </script>
 </body>
 </html>

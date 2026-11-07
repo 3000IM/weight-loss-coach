@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """手势花活的启动器：读你的减肥数据，在本机开网页，用 Chrome 打开。
 
-  python3 showcase/show.py               读 ~/weight-loss-data，数据不够就用示例
+  python3 showcase/show.py               读 ~/weight-loss-data，一条体重记录都没有就用示例
   python3 showcase/show.py --data 路径    换数据目录
   python3 showcase/show.py --sample      强制用示例数据（录屏不想露真实体重时）
   python3 showcase/show.py --no-open     只开服务，地址自己贴到浏览器
@@ -20,16 +20,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 from coach import DEFAULT_DATA, load_log, load_plan, num, stats  # noqa: E402
+sys.path.insert(0, str(HERE))
+import build_mobile  # noqa: E402
 
 PORT = 8765
 
 
 def payload(data):
-    """页面要的数据。计划没写全或体重不到 3 条画不出曲线，返回 None，页面就用示例。"""
+    """页面要的数据。计划没写全或一条体重都没有，返回 None，页面就用示例。"""
     plan, log = load_plan(data), load_log(data)
     weighed = [r for r in log if r["weight"] is not None]
     start, goal = num((plan or {}).get("起始体重 kg")), num((plan or {}).get("目标体重 kg"))
-    if not (plan and start and goal and start > goal and len(weighed) >= 3):
+    if not (plan and start and goal and start > goal and weighed):
         return None
     s = stats(data, weighed[-1]["date"])
     return {
@@ -83,12 +85,12 @@ def selftest():
     with tempfile.TemporaryDirectory() as tmp:
         assert payload(tmp) is None, "空目录要退回示例"
         (Path(tmp) / "plan.md").write_text("- 起始体重 kg：90\n- 目标体重 kg：80\n", encoding="utf-8")
-        (Path(tmp) / "log.md").write_text("| 2026-01-01 | 90 |  |  |\n| 2026-01-02 | 89.5 |  |  |\n", encoding="utf-8")
-        assert payload(tmp) is None, "体重不到 3 条要退回示例"
-        with open(Path(tmp) / "log.md", "a", encoding="utf-8") as f:
-            f.write("| 2026-01-03 | 89.2 |  | 备注 |\n")
+        (Path(tmp) / "log.md").write_text("", encoding="utf-8")
+        assert payload(tmp) is None, "一条体重都没有要退回示例"
+        (Path(tmp) / "log.md").write_text("| 2026-01-01 | 90 |  | 备注 |\n", encoding="utf-8")
         mine = payload(tmp)
-        assert mine["label"].startswith("YOUR") and mine["plan"]["rate"] is None and mine["log"][2][3] == "备注", mine
+        assert mine["label"].startswith("YOUR") and mine["plan"]["rate"] is None and mine["log"][0][3] == "备注", mine
+    assert build_mobile.fresh(), "mobile.html 过期了，跑一遍 build_mobile.py"
     print("show.py selftest ok")
 
 
