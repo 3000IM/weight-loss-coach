@@ -1,10 +1,14 @@
-<!-- 名字和链接只写在下面这两行，正文都说「这个 repo」。改名时再改 SKILL.md 开头的 name。 -->
-- 名字：`weight-loss-coach`（工作名）
-- Repo 链接：待建
+<!-- 改名时全文替换 3000IM/weight-loss-coach，再改 SKILL.md 开头的 name。 -->
 
-# 减肥教练
+# 减肥教练 weight-loss-coach
 
 一个给 Agent 用的 skill：第一次问答给你定计划，每天问你体重，每周按真实数据调下周的饮食和运动，你说「今天吃多了」它会算账告诉你是不是真吃多了。
+
+![看板截图，示例数据](examples/dashboard.jpg)
+
+上图是专属页（看板），数据是编的示例。
+
+**English.** weight-loss-coach is an agent skill (Claude Code, Codex, or any agent that can read files and run commands) that acts as a weight-loss coach. It interviews you once to set calorie and protein targets, records your daily weight and waist, reviews each week against your 7-day average and adjusts next week's plan, and keeps a local dashboard with day, week and month views. Everything is stored as Markdown files on your own computer and the scripts use only the Python 3.9+ standard library. The conversation is in Chinese. Install: `git clone https://github.com/3000IM/weight-loss-coach.git ~/.claude/skills/weight-loss-coach` (Claude Code) or `~/.agents/skills/weight-loss-coach` (Codex), then say 「开始减肥计划」 in a new session. Not medical advice.
 
 它做这些事：
 
@@ -20,28 +24,44 @@
 
 ## 怎么装
 
-把下面这句话发给你的 Agent，repo 链接换成上面那个。
+两种装法选一种：自己在终端跑一行命令，或者把一句话发给你的 Agent 让它装。装好后都要开一个新会话。
 
 ### Claude Code
 
+终端里跑：
+
 ```
-把这个 repo 克隆到 ~/.claude/skills/ 下面，然后告诉我装好了：<repo 链接>
+git clone https://github.com/3000IM/weight-loss-coach.git ~/.claude/skills/weight-loss-coach
 ```
 
-Windows 上是 `C:\Users\<你的用户名>\.claude\skills\`。装好后开一个新会话。
+或者发给 Agent：
+
+```
+把 https://github.com/3000IM/weight-loss-coach 克隆到 ~/.claude/skills/weight-loss-coach/，然后告诉我装好了
+```
+
+Windows 上目录是 `C:\Users\<你的用户名>\.claude\skills\weight-loss-coach\`。不会用 git 的话，在 GitHub 页面点 Code → Download ZIP，解压后把整个文件夹放到这个位置，文件夹名改成 `weight-loss-coach`。
 
 ### Codex
 
+终端里跑：
+
 ```
-把这个 repo 克隆到 ~/.agents/skills/ 下面，然后告诉我装好了：<repo 链接>
+git clone https://github.com/3000IM/weight-loss-coach.git ~/.agents/skills/weight-loss-coach
 ```
 
-Windows 上是 `C:\Users\<你的用户名>\.agents\skills\`。装好后重开 Codex。
+或者发给 Agent：
+
+```
+把 https://github.com/3000IM/weight-loss-coach 克隆到 ~/.agents/skills/weight-loss-coach/，然后告诉我装好了
+```
+
+Windows 上目录是 `C:\Users\<你的用户名>\.agents\skills\weight-loss-coach\`。装好后重开 Codex。
 
 ### 其他 Agent
 
 ```
-把这个 repo 克隆到你的 skill 目录，让你能读到里面的 SKILL.md，然后告诉我装好了：<repo 链接>
+把 https://github.com/3000IM/weight-loss-coach 克隆到你的 skill 目录，让你能读到里面的 SKILL.md，然后告诉我装好了
 ```
 
 没有 skill 目录的 Agent，就让它每次先读这份 `SKILL.md`。
@@ -56,13 +76,21 @@ Windows 上是 `C:\Users\<你的用户名>\.agents\skills\`。装好后重开 Co
 
 它问完问题就给你计划、打开专属页，再问你每天几点提醒。之后每天说一句「体重 81.2，腰围 90」就行。
 
+## 看板怎么开
+
+问答一结束它会自动打开，之后每次记体重都会更新。想再看，跟 Agent 说「打开看板」，或者直接用浏览器打开用户主目录下的 `weight-loss-data/dashboard.html`。也可以在 skill 目录里自己跑：
+
+```
+python3 coach.py dashboard --open
+```
+
 想先看看长什么样，不用填数据：
 
 ```
 python3 coach.py dashboard --data examples/three-weeks --open
 ```
 
-`examples/three-weeks/` 是一份编的三周示例数据。
+`examples/three-weeks/` 是一份编的三周示例数据，上面那张截图就是它。
 
 ## 补录和演示
 

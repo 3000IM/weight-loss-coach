@@ -7,3 +7,4 @@
 weight-loss-data/
 /examples/*/dashboard.html
 __pycache__/
+*.local.*
