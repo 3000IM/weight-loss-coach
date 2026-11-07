@@ -4,9 +4,9 @@
 只用标准库，Python 3.9+，Mac 和 Windows 都能跑。子命令：
   init        建数据目录，放好空模板（已有的文件不动）
   calc        按身高体重等算每天热量、蛋白、每周该掉多少、预计几周到
-  stats       读数据，输出 7 天平均、本周变化、和计划比、解锁进度（JSON）
+  stats       读数据，输出 7 天平均、本周变化、和计划比（JSON）
   import      补录几天的「日期 体重 腰围 备注」，文件或标准输入
-  dashboard   记满 7 天后把数据渲成本地网页 dashboard.html
+  dashboard   把数据渲成本地网页 dashboard.html，有一条记录就能出
   remind      今天没记体重就弹一条系统通知（定时任务跑的就是它）
   reminder    on HH:MM / off / status，管每天定时提醒
   --selfcheck 跑自检
@@ -30,7 +30,7 @@ DEFAULT_DATA = Path.home() / "weight-loss-data"
 MAC_LABEL = "com.weightloss.reminder"
 WIN_TASK = "WeightLossReminder"
 KCAL_PER_KG = 7700
-UNLOCK_DAYS = 7  # 记满几天才解锁看板
+MIN_SLOTS = {"day": 14, "week": 4, "month": 3}  # 数据少时看板横轴至少留这么多格，没到的部分只画虚线计划线
 
 
 def read(path):
@@ -225,9 +225,6 @@ def stats(data, as_of=None):
         "next_review": next_review.isoformat() if next_review else None,
         "review_due": bool(next_review and today >= next_review),
         "days_logged": days,
-        "days_to_unlock": max(0, UNLOCK_DAYS - days),
-        "unlocked": days >= UNLOCK_DAYS,
-        "first_unlock": days >= UNLOCK_DAYS and not (Path(data) / "dashboard.html").exists(),  # 页面只在解锁后生成，没有就是还没开过
         "weeks": [],
     }
     weighed = [r for r in rows if r["weight"] is not None]
@@ -294,26 +291,68 @@ def stats(data, as_of=None):
     return out
 
 
+def period(d, unit, anchor):
+    """d 所在这一段的第一天和下一段的第一天。周从 anchor（起始日期）起每 7 天一段，月按自然月。"""
+    if unit == "day":
+        return d, d + timedelta(days=1)
+    if unit == "week":
+        first = anchor + timedelta(days=(d - anchor).days // 7 * 7)
+        return first, first + timedelta(days=7)
+    first = d.replace(day=1)
+    return first, (first + timedelta(days=32)).replace(day=1)
+
+
+def mean2(vals):
+    vals = [v for v in vals if v is not None]
+    return round(statistics.mean(vals), 2) if vals else None
+
+
+def views(rows, plan):
+    """看板按天、周、月三种视角的点。周和月取这段记过的天的均值，计划线也按这些天取均值，才可比。"""
+    anchor = day(plan.get("起始日期")) or rows[0]["date"]
+    out = {"day": [{
+        "d": r["date"].isoformat(),
+        "w": r["weight"],
+        "a": window_mean(rows, r["date"], min_n=1),  # 曲线从第一天画起，统计数字仍要 3 天
+        "p": plan_at(plan, r["date"]),
+        "v": r["waist"],
+        "n": r["note"],
+    } for r in rows]}
+    for unit in ("week", "month"):
+        groups = {}
+        for r in rows:
+            groups.setdefault(period(r["date"], unit, anchor)[0], []).append(r)
+        out[unit] = [{
+            "d": first.isoformat(),
+            "to": (period(first, unit, anchor)[1] - timedelta(days=1)).isoformat(),
+            "w": mean2(r["weight"] for r in g),
+            # plan_at 后移 3 天是为了对齐 7 天平均，这里是当天实际的值，要挪回来
+            "p": mean2(plan_at(plan, r["date"] + timedelta(days=3)) for r in g if r["weight"] is not None),
+            "v": mean2(r["waist"] for r in g),
+            "c": sum(r["weight"] is not None for r in g),
+        } for first, g in sorted(groups.items())]
+    for unit, slots in MIN_SLOTS.items():  # 补上还没到的格子，只带计划线（g 表示还没到）
+        pts = out[unit]
+        slot, last = date.fromisoformat(pts[0]["d"]), date.fromisoformat(pts[-1]["d"])
+        for _ in range(slots):
+            after = period(slot, unit, anchor)[1]
+            if slot > last:
+                mid = (after - slot).days // 2 + (0 if unit == "day" else 3)
+                pts.append({"d": slot.isoformat(), "to": (after - timedelta(days=1)).isoformat(), "p": plan_at(plan, slot + timedelta(days=mid)), "g": True})
+            slot = after
+    return out
+
+
 def build_dashboard(data, as_of=None):
     plan, rows = load_plan(data), load_log(data)
     ready = plan and num(plan.get("起始体重 kg")) and num(plan.get("目标体重 kg")) and any(r["weight"] is not None for r in rows)
     payload = {"empty": not ready}
     if not payload["empty"]:
         s = stats(data, as_of or max(r["date"] for r in rows))
-        points = []
-        for r in rows:
-            points.append({
-                "d": r["date"].isoformat(),
-                "w": r["weight"],
-                "a": window_mean(rows, r["date"], min_n=1),  # 曲线从第一天画起，统计数字仍要 3 天
-                "p": plan_at(plan, r["date"]),
-                "v": r["waist"],
-                "n": r["note"],
-            })
         payload.update({
             "example": "示例" in plan.get("数据来源", ""),
             "stats": s,
-            "points": points,
+            "views": views(rows, plan),
             "kcal": plan.get("每天热量 kcal", ""),
             "protein": plan.get("每天蛋白 g", ""),
             "eta": plan.get("预计到达", ""),
@@ -463,16 +502,18 @@ def selftest():
                 raise AssertionError(f"这批该被拒绝：{wrong}")
             except SystemExit:
                 assert read(Path(tmp) / "log.md") == log_before, "有错的一批不能写进一半"
-        assert import_log(tmp, "\n".join(seven[:7]), today=last) == 6
-        s = stats(tmp, last)
-        assert s["days_logged"] == 6 and s["days_to_unlock"] == 1 and not s["unlocked"] and not s["first_unlock"], s
         coach = [sys.executable, str(HERE / "coach.py"), "dashboard", "--data", tmp]
-        assert "还差 1 天" in run_quiet(coach).stdout and not (Path(tmp) / "dashboard.html").exists(), "6 天不出页面"
-        assert import_log(tmp, seven[7], today=last) == 1
-        s = stats(tmp, last)
-        assert s["days_logged"] == 7 and s["unlocked"] and s["first_unlock"], s
+        page = lambda: json.loads(re.search(r"const DATA = (.*);\n", read(Path(tmp) / "dashboard.html")).group(1))
+        assert import_log(tmp, "\n".join(seven[:2]), today=last) == 1
+        assert run_quiet(coach).returncode == 0, "1 条记录也要出页面"
+        one = page()
+        assert not one["empty"] and one["stats"]["days_logged"] == 1, one
+        assert [len(one["views"][u]) for u in ("day", "week", "month")] == [14, 4, 3], one["views"]
+        assert sum(not p.get("g") for p in one["views"]["day"]) == 1 and one["views"]["day"][-1]["p"] < one["views"]["day"][0]["p"], "只有一个点，后面是往下走的虚线"
+        assert import_log(tmp, "\n".join(seven[2:]), today=last) == 6
         run_quiet(coach)
-        assert (Path(tmp) / "dashboard.html").exists() and not stats(tmp, last)["first_unlock"], "开过一次就不算第一次"
+        real = [p for p in page()["views"]["day"] if not p.get("g")]
+        assert len(real) == 7 and all(p["w"] and p["a"] for p in real), "7 天能连成曲线"
         import_log(tmp, "2026-11-01 85.2", today=last)
         kept = [r for r in load_log(tmp) if r["date"] == date(2026, 10, 31)][0]
         assert kept["waist"] == 92.0 and load_log(tmp)[1]["weight"] == 85.2 and len(load_log(tmp)) == 7, "覆盖同一天，不丢别的"
@@ -483,7 +524,14 @@ def selftest():
         shutil.copy(HERE / "templates" / "log.md", tmp)
         moved = date(2027, 3, 1)
         assert import_log(tmp, "\n".join(seven), to_today=True, today=moved) == 7
-        assert load_log(tmp)[-1]["date"] == moved and stats(tmp, moved)["unlocked"], "演示数据平移到以今天结尾"
+        assert load_log(tmp)[-1]["date"] == moved and stats(tmp, moved)["days_logged"] == 7, "演示数据平移到以今天结尾"
+    assert period(date(2026, 11, 5), "week", date(2026, 11, 6))[0] == date(2026, 10, 30), "起始日期前补录的落在前一周"
+    assert period(date(2026, 12, 31), "month", last)[1] == date(2027, 1, 1), "月份跨年"
+    v = views(load_log(example), load_plan(example))
+    real_weeks = [p for p in v["week"] if not p.get("g")]
+    assert [(p["w"], p["c"]) for p in real_weeks] == [(81.39, 7), (81.22, 6), (80.65, 6)], real_weeks
+    assert [(p["d"], p["w"], p["c"]) for p in v["month"] if not p.get("g")] == [("2026-10-01", 81.14, 18), ("2026-11-01", 80.4, 1)], v["month"]
+    assert real_weeks[0]["p"] < 82.0 and real_weeks[0]["to"] == "2026-10-18", real_weeks
     print("selfcheck ok")
 
 
@@ -536,10 +584,6 @@ def main():
         n = import_log(a.data, sys.stdin.read() if a.file == "-" else read(a.file), a.to_today)
         print(json.dumps({"imported": n, **stats(a.data)}, ensure_ascii=False, indent=1))
     elif a.cmd == "dashboard":
-        s = stats(a.data)
-        if not (s and s["unlocked"]):
-            print(f"还没解锁：记满 {UNLOCK_DAYS} 天才有这页，还差 {s['days_to_unlock'] if s else UNLOCK_DAYS} 天")
-            return
         out = build_dashboard(a.data)
         print(out.resolve())
         if a.open:

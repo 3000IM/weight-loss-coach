@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>WEIGHT LOSS COACH · HOLO</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  #stage{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);overflow:hidden;background:#04060b;isolation:isolate}
+  #stage>*{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #cam{object-fit:cover;transform:scaleX(-1);transition:filter .8s}
+  #vig{background:radial-gradient(ellipse at 50% 42%,transparent 45%,rgba(0,0,0,.62) 100%)}
+  #gl{mix-blend-mode:screen}
+  #hud{pointer-events:none}
+  :fullscreen{cursor:none}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <div id="vig"></div>
+  <canvas id="gl"></canvas>
+  <canvas id="hud"></canvas>
+</div>
+<script src="data.js"></script><!-- show.py 现读你的数据；直接开文件时没有它，用示例数据 -->
+<script type="module">
+import * as THREE from 'three';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+
+const MP='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
+const MODEL='https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const Q=new URLSearchParams(location.search);
+const NUM=(k,d)=>Q.has(k)?+Q.get(k):d;
+const DENSITY=NUM('n',.8), DIM=NUM('dim',.92);                 // 粒子倍数、人像亮度
+const PIN=NUM('pin',.28), ROT=NUM('rot',1), HIT=NUM('hit',.5); // 捏合多近算捏住、旋转灵敏度、抓线半径（0 = 不抓线）
+const HOLD=NUM('hold',.8), EDGE=NUM('edge',.5), STILL=NUM('still',1.2); // 张手和握拳：停多久、离画面边缘多远、多慢算停住
+const FC=NUM('fc',1.5), BETA=NUM('beta',2), FOLLOW=NUM('follow',35);    // 跟手：1€ 滤波的两个参数、视图追手的速度
+const SWIPE=NUM('swipe',8), NEAR=NUM('near',2.5), SWEEP=NUM('sweep',1.5); // 双手唰开、合拢：间距变化多快（手掌长/秒）、多近算并拢（手掌长）、至少变化多少（手掌长）
+const $=id=>document.getElementById(id), stage=$('stage'), video=$('cam'), hud=$('hud'), hx=hud.getContext('2d');
+const TAU=Math.PI*2, clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const CY='#39e6ff', AM='#ffb02e', PK='#ff5ad1', GR='#7dffc2', WH_='#eaf8ff', BL='#8fc4ff';
+const SANS='"Helvetica Neue","PingFang SC",sans-serif', MONO='"SF Mono",Menlo,"PingFang SC",monospace';
+
+// ---------- 数据：show.py 给的是你自己的 log.md 和 plan.md；没有就用下面这份编的示例（同 examples/three-weeks）。算法同 coach.py
+const SAMPLE={label:'SAMPLE DATA 示例数据',plan:{start:82.0,waist0:94.0,goal:75.0,rate:.44,kcal:1950,protein:'120–150',lineDay:'2026-10-12',lineKg:82.0,week:3,pace:'on_track'},log:[
+  ['2026-10-12',82.0,94.0,'第一天'],['2026-10-13',81.6],['2026-10-14',81.7],['2026-10-15',81.2],['2026-10-16',81.3],
+  ['2026-10-17',81.0],['2026-10-18',80.9,93.2],['2026-10-19',80.9],['2026-10-20',81.0,null,'昨晚练腿'],['2026-10-21',81.2,null,'腿还酸'],
+  ['2026-10-23',81.8,null,'昨晚火锅'],['2026-10-24',81.4],['2026-10-25',81.0,92.6],['2026-10-26',80.9],['2026-10-27',80.9],
+  ['2026-10-28',80.6],['2026-10-29',80.7],['2026-10-31',80.4],['2026-11-01',80.4,91.8],
+]};
+const {log:LOG,plan:PLAN,label:DATA_LABEL}=window.COACH_DATA||SAMPLE;
+const dayOf=s=>Date.parse(s+'T00:00Z')/864e5;
+const all=LOG.map(([date,kg,waist,note])=>({date,kg,waist,note:note||''})), rows=all.filter(r=>r.kg!=null);
+for(const r of rows)r.t=dayOf(r.date)-dayOf(rows[0].date);
+for(const r of rows){const w=rows.filter(q=>q.t>r.t-7&&q.t<=r.t);r.avg=w.length>=3?w.reduce((s,q)=>s+q.kg,0)/w.length:null}
+const lineT=PLAN.lineDay?dayOf(PLAN.lineDay)-dayOf(rows[0].date):0;
+const planAt=t=>PLAN.rate&&PLAN.lineKg?Math.max(PLAN.goal,PLAN.lineKg-PLAN.rate*Math.max(0,t-lineT-3)/7):null; // 计划线后移 3 天，和 7 天平均才可比
+const last=rows.at(-1), TN=last.t, lost=Math.max(0,PLAN.start-last.kg), toGoal=Math.max(0,last.kg-PLAN.goal), pct=clamp(lost/(PLAN.start-PLAN.goal),0,1);
+const waists=all.filter(r=>r.waist!=null), waistNow=waists.at(-1)?.waist, waist0=PLAN.waist0??waists[0]?.waist;
+
+// ---------- 手势：不分左右手，手转到什么角度都成立
+const spread=q=>{let mx=0,my=0,s=0;for(const p of q){mx+=p.x/q.length;my+=p.y/q.length}for(const p of q)s+=(p.x-mx)**2+(p.y-my)**2;return Math.sqrt(s)};
+// w 是手的 3D 真实尺寸，p 是画面坐标。MediaPipe 的 3D 深度很飘（真捏合的照片读出 0.71），
+// 所以捏合只看画面里两指尖的距离，再按手的真实大小换算成占手掌长度的比例（实测捏合 .10–.19，张开手 .37 以上）。
+const gapOf=(w,p)=>Math.hypot(p[4].x-p[8].x,p[4].y-p[8].y)*spread(w)/spread(p)/Math.hypot(w[0].x-w[9].x,w[0].y-w[9].y,w[0].z-w[9].z);
+// closed=这只手现在是捏着的：松开的门槛放宽一点，指尖抖动不会来回跳。
+function classify(w,p=w,closed=false){
+  const d=(a,b)=>Math.hypot(w[a].x-w[b].x,w[a].y-w[b].y,w[a].z-w[b].z);
+  const ext=tip=>d(tip,0)>d(tip-2,0)*1.1;
+  // 捏：两指尖靠近就算，其他三指随意（比 OK 也是捏）。只排除握拳：握拳时拇指也压在食指上，但食指尖缩回到指根里面（实测握拳 .86，OK 1.07，捏住 1.45）
+  if(gapOf(w,p)<(closed?PIN*1.3:PIN)&&d(8,0)>d(5,0)*(closed?.9:.96))return 'pinch';
+  const n=[8,12,16,20].filter(ext).length;
+  return n===4?'open':n===0&&[8,12,16,20].every(t=>d(t,0)<d(t-3,0)*1.1)?'fist':'none'; // 刚松开时手指半弯，不能算握拳
+}
+// 1€ 滤波（Casiez 2012）：手慢时压抖，手快时不拖。截止频率 = FC + BETA × 速度（世界单位/秒，画面高 = 10）
+function euro(f,x,dt){
+  if(f.x===undefined){f.x=x;f.dx=0;return x}
+  const a=fc=>{const r=TAU*fc*dt;return r/(r+1)};
+  f.dx+=a(1)*((x-f.x)/dt-f.dx);
+  return f.x+=a(FC+BETA*Math.abs(f.dx))*(x-f.x);
+}
+
+// ---------- 舞台：世界坐标高 10，宽按 1555:972
+const A=1555/972, WH=10, WW=WH*A, PPU=240;
+const renderer=new THREE.WebGLRenderer({canvas:$('gl'),powerPreference:'high-performance'});
+renderer.setClearColor(0,1);
+const scene=new THREE.Scene(), cam3=new THREE.PerspectiveCamera(40,A,.1,100);
+cam3.position.z=(WH/2)/Math.tan(THREE.MathUtils.degToRad(20));cam3.updateMatrixWorld();
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,cam3));
+const bloom=new UnrealBloomPass(new THREE.Vector2(256,256),.3,.4,.5);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+const U={uTime:{value:0},uMorph:{value:0},uPx:{value:30},uOrigin:{value:new THREE.Vector3(0,0,0)},
+  uTouch:{value:[0,1,2,3].map(()=>new THREE.Vector3(1e3,1e3,0))},uTouchAmp:{value:0},uScan:{value:new THREE.Vector4()},uScanOn:{value:0}};
+const pointsMat=new THREE.ShaderMaterial({uniforms:U,transparent:true,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,
+vertexShader:`
+uniform float uTime,uMorph,uPx,uTouchAmp,uScanOn; uniform vec3 uOrigin; uniform vec3 uTouch[4]; uniform vec4 uScan;
+attribute vec3 aHome,aColor; attribute vec4 aSeed; // x 出场先后 y 大小 z 相位 w 随机
+varying vec3 vC; varying float vA;
+vec3 flow(vec3 p,float t){return vec3(sin(p.y*1.3+t)+.6*sin(p.z*2.1-t*.7),sin(p.z*1.1+t*1.1)+.6*sin(p.x*1.9+t*.6),sin(p.x*1.2-t*.9)+.6*sin(p.y*2.3+t*.4));}
+void main(){
+  float d=aSeed.x;
+  float th=aHome.y+uTime*(.06+.5/aHome.x);
+  vec3 ga=vec3(cos(th)*aHome.x,aHome.z,sin(th)*aHome.x);
+  vec3 idle=vec3(ga.x,ga.y*.42-ga.z*.91,ga.y*.91+ga.z*.42)+flow(ga*.35+aSeed.z*6.28,uTime*.3+aSeed.w*6.)*.28;
+  vec3 tgt=(modelMatrix*vec4(position,1.)).xyz;
+  float p1=smoothstep(d*.2,d*.2+.25,uMorph);            // 待机 -> 手心
+  float p2=smoothstep(.45+d*.25,.75+d*.25,uMorph);      // 手心 -> 数据
+  float ang=aSeed.z*6.283+uTime*(3.+aSeed.w*4.);
+  float rad=.12+aSeed.y*.6+.22*sin(uTime*2.+aSeed.z*9.);
+  vec3 orb=uOrigin+vec3(cos(ang)*rad,sin(ang)*rad,sin(ang*2.)*rad*.5);
+  vec3 pos=mix(mix(idle,orb,p1),tgt,p2);
+  float fly=sin(3.1416*p2);
+  pos+=flow(tgt*.9+aSeed.z*6.28,uTime*.9)*fly*.88;
+  float hit=0.;
+  for(int i=0;i<4;i++){vec2 v=pos.xy-uTouch[i].xy;float g=exp(-dot(v,v)*1.6)*uTouchAmp;pos.xy+=normalize(v+1e-4)*g*.55;hit+=g;}
+  float s=dot(tgt,uScan.xyz)+uScan.w; float sg=exp(-s*s*30.)*uScanOn;
+  float pulse=pow(.5+.5*sin(tgt.x*1.7+tgt.y*.7-uTime*2.4),14.);
+  vec3 idleC=mix(vec3(.3,.95,1.),vec3(.55,.35,1.),clamp((aHome.x-2.5)/6.5,0.,1.))*(1.+.8*pow(aSeed.w,6.));
+  vC=mix(idleC,aColor,p2)*(1.+p2*pulse*1.2+hit*1.2+sg*4.)+vec3(fly*.16);
+  float idleA=step(aSeed.y,.3)*.95*(1.-p2);
+  vA=max(idleA,mix(p1*.8,.42,p2)+sg*.5)*mix(.75+.25*sin(uTime*3.+aSeed.z*40.),1.,p2);
+  vec4 mv=viewMatrix*vec4(pos,1.);
+  gl_Position=projectionMatrix*mv;
+  gl_PointSize=max(1.5,uPx*.62*(.8+aSeed.y*.6)*(1.+fly*.96+sg)/-mv.z);
+}`,
+fragmentShader:`
+varying vec3 vC; varying float vA;
+void main(){gl_FragColor=vec4(vC,smoothstep(.5,.32,length(gl_PointCoord-.5))*vA);}`});
+
+// 所有形状都用 2D 画布画，再把画到的像素采样成粒子；clear 层再贴一张同样的图保证字清楚
+const crispMats=[];
+function layer(parent,{w,h,n,draw,pos=[0,0,0],rot=[0,0,0],jz=.05,crisp=true}){
+  const cv=document.createElement('canvas');cv.width=w*PPU;cv.height=h*PPU;
+  const c=cv.getContext('2d',{willReadFrequently:true});draw(c,cv.width,cv.height);
+  c.setTransform(1,0,0,1,0,0);
+  const {data}=c.getImageData(0,0,cv.width,cv.height), ink=[];
+  for(let o=3;o<data.length;o+=4)if(data[o]>8)ink.push(o-3);
+  n=ink.length?Math.round(n*DENSITY):0;
+  const P=new Float32Array(n*3),H=new Float32Array(n*3),C=new Float32Array(n*3),D=new Float32Array(n*4);
+  for(let i=0;i<n;){
+    const o=ink[Math.random()*ink.length|0];
+    if(Math.random()*255>data[o+3])continue;
+    const px=(o/4)%cv.width, py=(o/4/cv.width)|0;
+    P.set([(px+Math.random())/PPU-w/2,h/2-(py+Math.random())/PPU,(Math.random()-.5)*jz],i*3);
+    const gr=(Math.random()+Math.random())/2*2-1, ring=2.5+Math.random()**.6*6.5; // 半径、三条旋臂的角度、厚度
+    H.set([ring,(Math.random()*3|0)*TAU/3+ring*.55+gr*.7,gr*(.25+Math.random()*.9)],i*3);
+    C.set([(data[o]/255)**2.2,(data[o+1]/255)**2.2,(data[o+2]/255)**2.2],i*3);
+    D.set([.55*Math.random()+.45*px/cv.width,Math.random(),Math.random(),Math.random()],i*4);
+    i++;
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(P,3));geo.setAttribute('aHome',new THREE.BufferAttribute(H,3));
+  geo.setAttribute('aColor',new THREE.BufferAttribute(C,3));geo.setAttribute('aSeed',new THREE.BufferAttribute(D,4));
+  const g=new THREE.Group();g.position.set(...pos);g.rotation.set(...rot);parent.add(g);
+  const pts=new THREE.Points(geo,pointsMat);pts.frustumCulled=false;g.add(pts);
+  if(crisp){
+    const t=new THREE.CanvasTexture(cv);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;
+    const m=new THREE.MeshBasicMaterial({map:t,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false,opacity:0});
+    g.add(new THREE.Mesh(new THREE.PlaneGeometry(w,h),m));crispMats.push(m);
+  }
+  return g;
+}
+const T=(c,s,x,y,size,color,{w=700,a='left',f=SANS,sp=0}={})=>{c.font=`${w} ${size}px ${f}`;c.textAlign=a;c.fillStyle=color;c.letterSpacing=sp+'px';c.fillText(s,x,y);const m=c.measureText(s).width;c.letterSpacing='0px';return m};
+const L=(c,pts,color,lw,dash=[])=>{c.strokeStyle=color;c.lineWidth=lw;c.lineJoin='round';c.lineCap='round';c.setLineDash(dash);c.beginPath();pts.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke();c.setLineDash([])};
+const arc=(c,r,a0,a1,color,lw,dash=[])=>{c.strokeStyle=color;c.lineWidth=lw;c.lineCap='butt';c.setLineDash(dash);c.beginPath();c.arc(0,0,r,a0,a1);c.stroke();c.setLineDash([])};
+
+// ---------- 全息体：中间体重曲线，左翼离目标差，右翼腰围和每日目标
+const holo=new THREE.Group();holo.rotation.order='YXZ';scene.add(holo);
+const kgs=rows.flatMap(r=>[r.kg,planAt(r.t)??r.kg]), kgSpan=Math.max(1,Math.max(...kgs)-Math.min(...kgs)), yLo=Math.min(...kgs)-kgSpan*.3, yHi=Math.max(...kgs)+kgSpan*.25;
+const kgStep=[1,2,5,10,20,50].find(s=>(yHi-yLo)/s<=5), tStep=7*Math.ceil(TN/28), tTicks=[];
+for(let t=0;t<TN-tStep/3;t+=tStep)tTicks.push(t);tTicks.push(TN);
+const X=t=>150+t/TN*1600, Y=kg=>980-(kg-yLo)/(yHi-yLo)*800;
+const local=(px,py)=>new THREE.Vector3(px/PPU-4,2.25-py/PPU,0);
+const curve=rows.map(r=>[X(r.t),Y(r.kg)]);
+
+layer(holo,{w:8,h:3.2,n:9000,pos:[0,-2.35,.2],rot:[-Math.PI/2,0,0],draw:(c,w,h)=>{
+  for(let x=0;x<=w;x+=120)L(c,[[x,0],[x,h]],'rgba(70,150,255,.55)',2);
+  for(let y=0;y<=h;y+=96)L(c,[[0,y],[w,y]],'rgba(70,150,255,.55)',2);
+  c.globalCompositeOperation='destination-in';
+  const g=c.createRadialGradient(w/2,h/2,80,w/2,h/2,w/2);g.addColorStop(0,'#000');g.addColorStop(1,'transparent');c.fillStyle=g;c.fillRect(0,0,w,h);
+}});
+layer(holo,{w:8,h:4.5,n:15000,pos:[0,0,-.7],draw:c=>{
+  for(let kg=Math.ceil(yLo/kgStep)*kgStep;kg<=yHi;kg+=kgStep){L(c,[[150,Y(kg)],[1750,Y(kg)]],'rgba(110,170,255,.5)',2,[4,10]);T(c,kg,130,Y(kg)+13,38,BL,{a:'right',f:MONO})}
+  for(const t of tTicks){L(c,[[X(t),180],[X(t),980]],'rgba(110,170,255,.32)',2);T(c,rows.find(r=>r.t>=t).date.slice(5),X(t),1036,38,BL,{a:'center',f:MONO})}
+  const m=T(c,'WEIGHT',150,104,74,WH_,{w:800,sp:6});T(c,'体重 · kg',150+m+22,104,40,BL);
+  const [paceEn,paceCn]={on_track:['ON TRACK','正常'],fast:['FAST','偏快'],slow:['SLOW','偏慢']}[PLAN.pace]||[];
+  T(c,`WEEK ${PLAN.week}${paceEn?' · '+paceEn:''}  第 ${PLAN.week} 周${paceCn?' · '+paceCn:''}`,150,156,34,'#7dffc2',{f:MONO,w:600});
+  L(c,[[1020,92],[1070,92]],CY,7);T(c,'DAILY 每日',1082,104,34,CY,{w:600});
+  L(c,[[1300,92],[1350,92]],AM,10);T(c,'7-DAY AVG 7天平均',1362,104,34,AM,{w:600});
+  L(c,[[1020,146],[1070,146]],'#dfe9ff',4,[10,10]);T(c,'PLAN 计划线',1082,158,34,'#dfe9ff',{w:600});
+  for(const [x,y,dx,dy] of [[20,20,1,1],[1900,20,-1,1],[20,1060,1,-1],[1900,1060,-1,-1]])L(c,[[x+dx*70,y],[x,y],[x,y+dy*70]],CY,5);
+}});
+layer(holo,{w:8,h:4.5,n:6000,pos:[0,0,-.35],draw:c=>PLAN.rate&&L(c,rows.map(r=>[X(r.t),Y(planAt(r.t))]),'#dfe9ff',4,[12,14])});
+layer(holo,{w:8,h:4.5,n:22000,jz:.4,crisp:false,draw:c=>{
+  c.beginPath();curve.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.lineTo(X(TN),980);c.lineTo(X(0),980);c.closePath();
+  const g=c.createLinearGradient(0,250,0,980);g.addColorStop(0,'rgba(57,230,255,.75)');g.addColorStop(1,'rgba(57,120,255,.03)');c.fillStyle=g;c.fill();
+}});
+layer(holo,{w:8,h:4.5,n:28000,draw:c=>{
+  L(c,curve,CY,7);
+  for(const [x,y] of curve){c.fillStyle=CY;c.beginPath();c.arc(x,y,11,0,TAU);c.fill()}
+  T(c,rows[0].kg.toFixed(1),X(0)+6,Y(rows[0].kg)-28,56,WH_,{f:MONO});
+  const jump=r=>{const i=rows.indexOf(r);return r.kg-rows[i-1].kg};
+  const hot=rows.filter((r,i)=>i&&r.note).sort((a,b)=>jump(b)-jump(a))[0]; // 标出涨得最多、又写了备注的那天
+  if(hot){T(c,hot.kg.toFixed(1),X(hot.t),Y(hot.kg)-66,56,WH_,{a:'center',f:MONO});T(c,hot.note.slice(0,10),X(hot.t),Y(hot.kg)-24,34,'#ffd9a0',{a:'center',w:600})}
+  T(c,last.kg.toFixed(1),X(TN),Y(last.kg)+76,72,WH_,{a:'right',f:MONO,w:800});
+}});
+layer(holo,{w:8,h:4.5,n:20000,pos:[0,0,.35],draw:c=>L(c,rows.filter(r=>r.avg).map(r=>[X(r.t),Y(r.avg)]),AM,12)});
+
+const left=new THREE.Group();left.position.set(-6.15,.05,.5);left.rotation.y=.52;holo.add(left);
+const spinA=layer(left,{w:4.2,h:4.2,n:8000,draw:(c,w,h)=>{c.translate(w/2,h/2);const R=w*.47;
+  for(let i=0;i<72;i++){const a=i/72*TAU,r=i%6?R-14:R-40;L(c,[[Math.cos(a)*R,Math.sin(a)*R],[Math.cos(a)*r,Math.sin(a)*r]],CY,i%6?3:7)}}});
+const spinB=layer(left,{w:4.2,h:4.2,n:5000,draw:(c,w,h)=>{c.translate(w/2,h/2);arc(c,w*.32,0,TAU,PK,6,[46,30]);arc(c,w*.3,.4,2.2,'#ff9ae6',3)}});
+layer(left,{w:4.2,h:4.2,n:13000,draw:(c,w,h)=>{c.save();c.translate(w/2,h/2);
+  arc(c,w*.385,0,TAU,'rgba(255,176,46,.22)',26);arc(c,w*.385,-Math.PI/2,-Math.PI/2+pct*TAU,AM,26);c.restore();
+  T(c,toGoal.toFixed(1),w/2,h/2+30,190,WH_,{a:'center',w:800,sp:-4});
+  T(c,'KG TO GOAL',w/2,h/2+90,38,AM,{a:'center',f:MONO});T(c,'距目标',w/2,h/2+138,34,'#ffd9a0',{a:'center',w:600});
+}});
+layer(left,{w:4.2,h:1,n:5000,pos:[0,-2.55,0],draw:(c,w)=>{
+  T(c,`LOST 已减 ${lost.toFixed(1)} kg  ·  GOAL 目标 ${PLAN.goal.toFixed(1)} kg`,w/2,70,36,WH_,{a:'center',w:600});
+  T(c,`${Math.round(pct*100)}% COMPLETE 完成度`,w/2,126,32,AM,{a:'center',f:MONO});
+}});
+
+const right=new THREE.Group();right.position.set(6.15,.05,.5);right.rotation.y=-.52;holo.add(right);
+layer(right,{w:3.7,h:5.1,n:38000,draw:(c,w)=>{
+  const card=(y,en,cn,val,unit,sub,col)=>{
+    const h=370;L(c,[[20,y+36],[56,y],[w-20,y],[w-20,y+h-36],[w-56,y+h],[20,y+h],[20,y+36]],col,5);
+    const m=T(c,en,56,y+66,36,col,{f:MONO,w:700,sp:2});T(c,cn,56+m+18,y+66,30,WH_,{w:600});
+    const v=T(c,val,52,y+218,val.length>5?118:150,WH_,{w:800,sp:-2});T(c,unit,52+v+16,y+218,44,col,{w:600});
+    T(c,sub,56,y+290,32,'#cfe6ff',{w:500});
+  };
+  card(20,'WAIST','腰围',waistNow?.toFixed(1)??'--','cm',waistNow==null?'还没量过腰围':`比起始 ${waistNow>waist0?'+':'−'}${Math.abs(waistNow-waist0).toFixed(1)} cm`,'#7dffc2');
+  const bars=waists.slice(-4).map(r=>r.waist), lo=Math.min(...bars), hi=Math.max(...bars);
+  const bx=w-250;bars.forEach((v,i)=>{const bh=68+(v-lo)/(hi-lo||1)*84;c.fillStyle='#7dffc2';c.fillRect(bx+i*50,350-bh,32,bh)});
+  card(420,'CALORIES','每日热量',String(PLAN.kcal||'--'),'kcal','每日目标 DAILY TARGET',AM);
+  card(820,'PROTEIN','每日蛋白',PLAN.protein||'--','g','每日目标 DAILY TARGET',CY);
+}});
+
+// ---------- 状态
+const start={x:0,y:-.9,s:.92,rx:0,ry:0};
+const S=window.S={phase:'idle',mode:'',m:0,charge:0,hands:[],err:'',status:'LOADING',camLabel:'',dpr:Math.min(devicePixelRatio,2),chrome:true,
+  rings:[],sparks:[],pops:[],flash:0,log:[],cur:{...start},t:{...start},ref:null,scan:null,fps:0,lastDissolve:-1e4,lockAt:-1e4,boomed:true,now:0,pair:[],pinchAt:-1e4,duo:false,latch:false};
+const NAMES={summon:['SUMMON','召唤','双手唰地拉开，或单手张开停住'],rotate:['ROTATE','旋转','捏住空白处，拖动'],scan:['READ','读数','捏住一根线，沿线滑'],stretch:['ZOOM','缩放','两只手都捏住，拉开合拢'],lock:['RELEASE','松手','手指一分开就定住'],dissolve:['DISSOLVE','消散','双手合拢，或握拳停住']};
+S.look=1;S.expo=1;
+const setDim=b=>{S.look=b;video.style.filter=`brightness(${(DIM*b*S.expo).toFixed(3)}) contrast(1.08) saturate(.96)`};setDim(1);
+const meter=document.createElement('canvas').getContext('2d',{willReadFrequently:true});meter.canvas.width=16;meter.canvas.height=9;
+function autoExposure(){ // 房间亮就把人像压暗，全息才亮得出来；只在内存里算一个平均值，不留帧
+  if(video.readyState<2)return;
+  meter.drawImage(video,0,0,16,9);
+  const d=meter.getImageData(0,0,16,9).data;let sum=0;for(let i=0;i<d.length;i+=4)sum+=d[i]+d[i+1]+d[i+2];
+  S.expo=clamp(.38/(sum/(d.length*.75)/255),.55,1);setDim(S.look);
+}
+setInterval(autoExposure,500);
+const addRing=(p,color)=>S.rings.push({x:p.x,y:p.y,at:S.now,color});
+function burst(p,color){ // 双手版多一圈光环和一把火花，从两手中间往外喷
+  addRing(p,color);
+  for(let i=0;i<260;i++){const a=Math.random()*TAU,v=2+Math.random()*11;S.sparks.push({x:p.x,y:p.y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:.35+Math.random()*.6})}
+}
+function summon(p,duo=false){S.phase='summon';S.duo=duo;S.charge=1;U.uOrigin.value.set(p.x,p.y,0);addRing(p,CY);S.flash=duo?.34:.18;setDim(.85);if(duo)burst(p,PK);
+  Object.assign(S.t,{x:clamp(p.x*.2,-1.2,1.2),y:clamp(-.9+p.y*.15,-1.6,.3),s:.92,rx:0,ry:0});Object.assign(S.cur,S.t,{s:.6,ry:-.9});}
+function dissolve(p,duo=false){S.phase='dissolve';S.duo=duo;S.latch=duo;S.ref=null;S.scan=null;U.uOrigin.value.set(p.x,p.y,0);S.lastDissolve=S.now;S.boomed=false;addRing(p,AM);}
+
+// ---------- 摄像头（或 ?video= 测试视频）和手势模型，都只在本机跑，不上传不存帧
+let landmarker=null,lastVT=-1;
+async function startCam(id){
+  try{
+    if(Q.get('video')){video.src=Q.get('video');video.loop=true;await video.play();S.camLabel='VIDEO FILE';return}
+    video.srcObject?.getTracks().forEach(t=>t.stop());
+    S.camLabel='等待摄像头权限';
+    // ego lite 安装包里没有摄像头用途声明，点了允许也可能一直黑屏，这时给一句提示
+    setTimeout(()=>{if(video.readyState<2&&!S.err)S.err='还没拿到摄像头。点了允许还是黑屏，换 Chrome 打开'},20000);
+    const s=await navigator.mediaDevices.getUserMedia({audio:false,video:{width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30},...(id?{deviceId:{exact:id}}:{})}});
+    video.srcObject=s;await video.play();S.camLabel=s.getVideoTracks()[0].label;S.err='';
+  }catch(e){
+    S.camLabel='NO CAMERA';
+    S.err=e.name==='NotAllowedError'?'摄像头没给权限：地址栏左边点开允许，再刷新':`摄像头打不开（${e.name}）：换 Chrome 打开`;
+  }
+}
+async function nextCam(){
+  const ds=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+  if(ds.length<2)return;
+  const cur=video.srcObject?.getVideoTracks()[0]?.getSettings().deviceId;
+  const n=ds[(ds.findIndex(d=>d.deviceId===cur)+1)%ds.length];
+  localStorage.setItem('cam',n.deviceId);startCam(n.deviceId);
+}
+async function startHands(){
+  try{
+    const {FilesetResolver,HandLandmarker}=await import(MP+'/vision_bundle.mjs');
+    const fs=await FilesetResolver.forVisionTasks(MP+'/wasm');
+    landmarker=await HandLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:'GPU'},runningMode:'VIDEO',numHands:2});
+    S.status='TRACKING';
+  }catch(e){S.status='NO MODEL';S.err='手势模型加载失败，检查网络后刷新：'+e.message}
+}
+function toWorld(q){ // 视频按 cover 铺满舞台再左右镜像，这里算到世界坐标
+  const av=(video.videoWidth||16)/(video.videoHeight||9);
+  const fx=av>A?.5+((1-q.x)-.5)*(av/A):1-q.x, fy=av>A?q.y:.5+(q.y-.5)*(A/av);
+  return {x:(fx-.5)*WW,y:(.5-fy)*WH};
+}
+const centre=(pts,ids)=>{let x=0,y=0;for(const k of ids){x+=pts[k].x/ids.length;y+=pts[k].y/ids.length}return {x,y}};
+function track(now){
+  const vt=Q.get('video')?now:video.currentTime;
+  if(!landmarker||video.readyState<2||vt===lastVT)return;
+  lastVT=vt;
+  const r=landmarker.detectForVideo(video,performance.now());
+  const prev=S.hands;prev.forEach(h=>h.used=false);
+  const seen=[];
+  const next=r.landmarks.map((lm,i)=>{
+    const raw=lm.map(toWorld), palm=centre(raw,[0,5,9,13,17]);
+    if(seen.some(q=>Math.hypot(q.x-palm.x,q.y-palm.y)<1.3))return null;
+    seen.push(palm);
+    let h=prev.filter(q=>!q.used).sort((a,b)=>Math.hypot(a.palm.x-palm.x,a.palm.y-palm.y)-Math.hypot(b.palm.x-palm.x,b.palm.y-palm.y))[0];
+    if(h&&Math.hypot(h.palm.x-palm.x,h.palm.y-palm.y)>3.5)h=null;
+    if(h)h.used=true;else h={pts:raw,palm,raw:palm,f:[],frames:0,speed:9,hold:0,cand:'none',candAt:now,g:'none',gAt:now,seen:now-33}; // 刚进画面的手先当它在动
+    for(const k of [4,8,12,16,20]){ // 指尖甩火花
+      const sp=Math.hypot(raw[k].x-h.pts[k].x,raw[k].y-h.pts[k].y);
+      for(let e=Math.min(3,1+sp*18|0);e-->0;)if(S.sparks.length<720&&(sp>.03||Math.random()<.08))
+        S.sparks.push({x:raw[k].x,y:raw[k].y,vx:(raw[k].x-h.pts[k].x)*5+(Math.random()-.5)*1.4,vy:(raw[k].y-h.pts[k].y)*5+(Math.random()-.5)*1.4,life:.36+Math.random()*.4});
+    }
+    const dt=Math.max(.001,(now-h.seen)/1000);
+    h.pts=raw.map((p,k)=>({x:euro(h.f[k*2]??={},p.x,dt),y:euro(h.f[k*2+1]??={},p.y,dt)}));
+    h.palm=centre(h.pts,[0,5,9,13,17]);
+    h.size=Math.hypot(h.pts[9].x-h.pts[0].x,h.pts[9].y-h.pts[0].y);h.frames++;
+    h.tip=centre(h.pts,[4,8]);   // 画反馈、抓线用指尖
+    h.grip=centre(h.pts,[5,9]);  // 拖动用指根：捏合、松开时指尖会动，指根不动，松手那一下视图不会被带歪
+    h.speed+=(Math.hypot(palm.x-h.raw.x,palm.y-h.raw.y)/dt/Math.max(.3,Math.hypot(raw[9].x-raw[0].x,raw[9].y-raw[0].y))-h.speed)*Math.min(1,dt/.15); // 每秒移动几个手掌长
+    h.raw=palm;
+    h.inFrame=raw.every(p=>Math.abs(p.x)<WW/2-EDGE&&Math.abs(p.y)<WH/2-EDGE); // 手完整在画面里，离边有余量。碰到边缘时模型靠猜，张手握拳都不可信
+    h.gap=gapOf(r.worldLandmarks[i],raw);
+    const g=classify(r.worldLandmarks[i],raw,h.g==='pinch');
+    if(g!==h.cand){h.cand=g;h.candAt=now}
+    // 分开要连续两帧（一帧的噪声不算松手），捏上三帧，其他手势 .12 秒
+    if(h.g!==g&&now-h.candAt>=(h.g==='pinch'?30:g==='pinch'?60:120)){
+      if(h.g==='pinch'&&S.phase==='holo')S.pops.push({...h.tip,at:now});
+      h.g=g;h.gAt=now;
+    }
+    h.seen=now;return h;
+  }).filter(Boolean);
+  S.hands=next.concat(prev.filter(h=>!h.used&&now-h.seen<(h.g==='pinch'?400:220))); // 掉一两帧不算手没了；捏着的手多留一会，模型短暂掉手时不算松手
+}
+
+// ---------- 手势 -> 全息体
+// 三根能捏的线。每帧投到屏幕上，单位和手的坐标一样
+const LINES=[
+  {key:'kg',en:'DAILY',cn:'每日',col:CY,z:0,pts:rows.map(r=>({r,kg:r.kg}))},
+  {key:'avg',en:'7-DAY AVG',cn:'7天平均',col:AM,z:.35,pts:rows.filter(r=>r.avg).map(r=>({r,kg:r.avg}))},
+  {key:'plan',en:'PLAN',cn:'计划',col:'#dfe9ff',z:-.35,pts:PLAN.rate?rows.map(r=>({r,kg:planAt(r.t)})):[]},
+];
+S.lines=LINES;
+function linesOnScreen(){for(const l of LINES)l.scr=l.pts.map(q=>{const p=project(holo.localToWorld(new THREE.Vector3(X(q.r.t)/PPU-4,2.25-Y(q.kg)/PPU,l.z)));return {x:(p.x-.5)*WW,y:(.5-p.y)*WH}})}
+function nearestOnLine(l,p){ // 线上离 p 最近的点；i 是最近的那一天
+  let best={d:1e9,l};
+  for(let i=1;i<l.scr.length;i++){
+    const a=l.scr[i-1],b=l.scr[i],dx=b.x-a.x,dy=b.y-a.y,u=clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/(dx*dx+dy*dy||1),0,1),x=a.x+dx*u,y=a.y+dy*u,d=Math.hypot(p.x-x,p.y-y);
+    if(d<best.d)best={d,x,y,l,i:u<.5?i-1:i};
+  }
+  return best;
+}
+const hitLine=p=>LINES.map(l=>nearestOnLine(l,p)).reduce((a,b)=>b.d<a.d?b:a);
+function scanAt(q){
+  const o=q.l.pts[q.i], x=X(o.r.t), p=holo.localToWorld(local(x,600)), n=holo.localToWorld(local(x+PPU,600)).sub(p).normalize();
+  U.uScan.value.set(n.x,n.y,n.z,-n.dot(p));
+  S.scan={r:o.r,kg:o.kg,line:q.l,x:q.x,y:q.y,top:project(holo.localToWorld(local(x,180))),bot:project(holo.localToWorld(local(x,980)))};
+}
+const TURN=.25; // 手移动 1 个单位（画面高的 1/10）转多少弧度，约 14°
+// 双手唰开、合拢：看 .4 秒内两手间距变得多快，单位是手掌长，离镜头远近都一样。
+// 只按左右排，不认是哪只手，快动作里模型丢手再找回也接得上；手交叠时模型只看到一只，就当间距为 0。
+function duoSwipe(now,hs){
+  if(hs.some(h=>h.g==='pinch'||h.cand==='pinch'))S.pinchAt=now;
+  const H=S.pair;while(H[0]&&now-H[0].at>400)H.shift();
+  if(!hs.length)S.latch=false;
+  if(hs.length===1&&H.at(-1)?.n===2&&H.at(-1).near&&S.phase==='idle')S.latch=true; // 两只手并到一起，模型只看得到一只：还是在准备唰
+  if(!hs.length||hs.length>2)return null;
+  const [l,r]=hs.length<2||hs[0].palm.x<hs[1].palm.x?[hs[0],hs.at(-1)]:[hs[1],hs[0]], isOpen=h=>h.g==='open'||h.cand==='open';
+  const unit=(l.size+r.size)/2, c={at:now,n:hs.length,l:l.palm,r:r.palm,gap:Math.hypot(r.palm.x-l.palm.x,r.palm.y-l.palm.y),open:isOpen(l)&&isOpen(r)};
+  c.near=c.gap<=NEAR*unit;H.push(c);
+  if(hs.length===2&&!c.near)S.latch=false;
+  // 两只手都张开、都真被看到 3 帧（防模型闪出一只假手）、都在画面内；捏过的手 .5 秒内不算：缩放时手指一松、手还在动，不能当成合拢
+  if(hs.length<2||!c.open||now-S.pinchAt<500||hs.some(h=>h.frames<3||!h.inFrame))return null;
+  for(const o of H){
+    if(!o.open)continue;
+    const sign=c.gap>o.gap?1:-1, big=sign>0?c:o, dg=Math.abs(c.gap-o.gap), span=(now-o.at)/1000;
+    if(dg<SWEEP*unit||dg<SWIPE*unit*span||!(c.near||o.near))continue;
+    const nx=(big.r.x-big.l.x)/big.gap, ny=(big.r.y-big.l.y)/big.gap;
+    if(Math.abs(nx)<Math.abs(ny))continue; // 要往两侧，不算上下
+    const out=(a,b)=>(b.x-a.x)*nx+(b.y-a.y)*ny;
+    if(Math.min(-sign*out(o.l,c.l),sign*out(o.r,c.r))<dg*.2)continue; // 两只手都要动，只动一只不算
+    return {kind:sign>0?'open':'close',mid:{x:(c.l.x+c.r.x)/2,y:(c.l.y+c.r.y)/2}};
+  }
+  return null;
+}
+const midOf=hs=>centre(hs.map(h=>h.palm),[...hs.keys()]);
+function logic(now,dt){
+  S.now=now;
+  const hs=S.hands, t=S.t, want={idle:'open',holo:'fist'}[S.phase];
+  const duo=hs.length===2&&hs.every(h=>h.g==='open');
+  const duoNear=duo&&Math.hypot(hs[0].palm.x-hs[1].palm.x,hs[0].palm.y-hs[1].palm.y)<=NEAR*(hs[0].size+hs[1].size)/2; // 两手并拢是在准备唰，不走停住这条路
+  // 张手、握拳：整只手在画面里、离边有余量、停住不动，进度才往前走；动一下往回退，换手势清零
+  let armed=null;
+  for(const h of hs){
+    const wait=want==='open'&&(duoNear||S.latch), ready=h.g===want&&h.inFrame&&h.speed<STILL&&!wait; // latch：两手并在一起（刚合拢消散，或正要唰），不走停住这条路
+    h.hold=h.g===want?Math.max(0,h.hold+(ready?dt:-dt*3)):0;
+    h.why=h.g!==want||ready?'':!h.inFrame?'整只手进画面':wait?(h===hs[0]?'向两侧唰地拉开':''):duo?'':'停住不动';
+    if(h.hold>(armed?.hold||0))armed=h;
+  }
+  S.mode='';
+  const swipe=duoSwipe(now,hs);
+  if(swipe?.kind==='open'&&S.phase==='idle'&&now-S.lastDissolve>900)summon(swipe.mid,true);
+  if(swipe?.kind==='close'&&S.phase==='holo')dissolve(swipe.mid,true);
+  if(S.phase==='idle'){
+    if(armed&&now-S.lastDissolve>900){
+      S.mode='summon';S.charge=clamp(armed.hold/HOLD,0,1);U.uOrigin.value.set(armed.palm.x,armed.palm.y,0);
+      if(S.charge>=1)summon(armed.palm);
+    }else S.charge=0;
+    const goal=.42*S.charge;S.m+=clamp(goal-S.m,-dt*1.2,dt*1.6);
+  }
+  if(S.phase==='summon'){
+    const o=S.duo&&hs.length?midOf(hs):hs.find(h=>h.g==='open')?.palm; // 粒子跟着手走，双手版跟着两手中间
+    S.mode='summon';S.m=Math.min(1,S.m+dt*(S.m<.5?1.1:.55)*(S.duo?2:1));
+    if(o&&S.m<.55)U.uOrigin.value.set(o.x,o.y,0);
+    if(S.m>=1)S.phase='holo';
+  }
+  if(S.phase==='dissolve'){
+    const o=S.duo&&hs.length?midOf(hs):hs.find(h=>h.g==='fist')?.palm;
+    S.mode='dissolve';if(o)U.uOrigin.value.set(o.x,o.y,0);
+    S.m=Math.max(0,S.m-dt*(S.m>.5?.95:1.5)*(S.duo?2:1));
+    if(!S.boomed&&S.m<.42){const p={x:U.uOrigin.value.x,y:U.uOrigin.value.y};S.boomed=true;S.flash=S.duo?.5:.32;addRing(p,PK);addRing(p,AM);if(S.duo)burst(p,CY);setDim(1)}
+    if(S.m<=0)S.phase='idle';
+  }
+  let scanOn=0;
+  if(S.phase==='holo'){
+    // 核心：只有捏住才动。捏 = 手指按在屏幕上：捏在线上抓线，捏在空白处转视图，两只手捏住缩放，手指一分开定住
+    const held=hs.filter(h=>h.g==='pinch');
+    linesOnScreen();
+    for(const h of hs){const q=!held.length&&h.g!=='fist'&&h.gap<PIN*2.2?hitLine(h.tip):null;h.near=q?.d<HIT?q:null} // 手指快合上时先提示会抓到哪根线
+    if(held.length>=2&&held.every(h=>now-h.gAt>150)){ // 两只手都捏住（稳住 .15 秒，防模型闪出一只假手）：拉开放大、合拢缩小、一起挪动就移位置；松开一只退回单手旋转
+      S.mode='stretch';S.scan=null;
+      const [a,b]=held, gap=Math.hypot(b.grip.x-a.grip.x,b.grip.y-a.grip.y), mx=(a.grip.x+b.grip.x)/2, my=(a.grip.y+b.grip.y)/2;
+      if(!(S.ref?.pair?.includes(a)&&S.ref.pair.includes(b)))S.ref={pair:[a,b],gap:Math.max(gap,.5),mx,my,s:t.s,x:t.x,y:t.y};
+      const r=S.ref, s=r.s*gap/r.gap;
+      if(a.cand==='pinch'&&b.cand==='pinch'){ // 手指一过松开门槛视图就不再跟，下一帧确认只是决定算不算松手
+        t.s=clamp(s,.35,1.5);if(t.s!==s){r.s=t.s;r.gap=Math.max(gap,.5)} // 到头了把起点挪过来，手一往回视图就跟
+        t.x=clamp(r.x+mx-r.mx,-3,3);t.y=clamp(r.y+my-r.my,-2.2,1.6);
+      }
+    }else if(held.length){
+      const h=held.includes(S.ref?.hand)?S.ref.hand:held[0];
+      if(S.ref?.hand!==h){ // 捏上那一刻定抓什么；缩放松开一只手后接着转，不去抓线
+        const hit=S.ref?.pair?null:hitLine(h.tip);
+        S.ref={hand:h,x:h.grip.x,y:h.grip.y,rx:t.rx,ry:t.ry,line:hit?.d<HIT?hit.l:null,at:now};
+      }
+      const r=S.ref;
+      if(r.line){S.mode='scan';scanOn=1;if(h.cand==='pinch'||!S.scan)scanAt(nearestOnLine(r.line,h.tip))} // 视图不动，读数跟着指尖沿线走
+      else{
+        S.mode='rotate';S.scan=null;
+        if(h.cand==='pinch'){
+          t.ry=r.ry+(h.grip.x-r.x)*TURN*ROT;
+          const rx=r.rx-(h.grip.y-r.y)*TURN*ROT;
+          t.rx=clamp(rx,-1,1);if(t.rx!==rx){r.rx=t.rx;r.y=h.grip.y}
+        }else Object.assign(t,S.cur);
+      }
+    }else{
+      if(S.ref){S.ref=null;Object.assign(t,S.cur);S.lockAt=now} // 松手：目标改成当前位置，一点都不再滑
+      S.scan=null;S.mode='lock';
+      if(armed){S.mode='dissolve';if(armed.hold>=HOLD)dissolve(armed.palm)}
+    }
+  }
+  U.uScanOn.value+=(scanOn-U.uScanOn.value)*Math.min(1,dt*8);
+  const k=1-Math.exp(-dt*(S.ref?FOLLOW:7)), c=S.cur; // 手的抖动已经被 1€ 压掉了，捏住时这里只补 30 帧到 60 帧的间隔，不再加延迟
+  for(const key of ['x','y','s','rx','ry'])c[key]+=(t[key]-c[key])*k;
+  holo.position.set(c.x,c.y,0);holo.scale.setScalar(c.s);
+  holo.rotation.set(c.rx,c.ry,0);
+  spinA.rotation.z+=dt*.28;spinB.rotation.z-=dt*.6;
+  holo.updateMatrixWorld(true);
+  U.uTouchAmp.value=S.phase==='holo'?0:1; // 数据成形后手不再推开粒子，曲线和数字不晃
+  U.uTouch.value.forEach((v,i)=>{const h=hs[i>>1],p=h&&(i&1?h.pts[8]:h.palm);v.set(p?p.x:1e3,p?p.y:1e3,0)});
+  const crisp=THREE.MathUtils.smoothstep(S.m,.88,1)*.92;
+  for(const m of crispMats)m.opacity=crisp;
+  U.uMorph.value=S.m;
+  const line=`${S.phase}|${S.mode}|${hs.map(h=>h.g).join(',')}`;
+  if(line!==S.lastLine){S.lastLine=line;S.log.push(`${video.currentTime.toFixed(2)} ${line}`);if(S.log.length>300)S.log.shift()}
+}
+function project(v){const n=v.clone().project(cam3);return {x:(n.x+1)/2,y:(1-n.y)/2,nx:n.x}}
+// ---------- 手、连线、火花、读数和四角信息画在最上层
+const BONES=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const sprite=col=>{const s=document.createElement('canvas');s.width=s.height=64;const c=s.getContext('2d'),g=c.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,'#fff');g.addColorStop(.25,col);g.addColorStop(1,'transparent');c.fillStyle=g;c.fillRect(0,0,64,64);return s};
+const SP={[CY]:sprite(CY),[AM]:sprite(AM),[PK]:sprite(PK),[GR]:sprite(GR)};
+const GCOL={open:CY,fist:AM,pinch:GR,none:CY};
+function drawHud(now,dt){
+  const c=hx,W=hud.width,H=hud.height,u=H/1080,time=now/1000;
+  const px=p=>(p.x/WW+.5)*W, py=p=>(.5-p.y/WH)*H;
+  const font=(size,w=600,f=MONO)=>c.font=`${w} ${size*u}px ${f}`;
+  c.clearRect(0,0,W,H);c.textAlign='left';c.lineCap='round';c.shadowColor='rgba(0,0,0,.8)';c.shadowBlur=5*u;
+  if(S.chrome){
+    c.strokeStyle='rgba(120,220,255,.75)';c.lineWidth=2.5*u;const m=22*u,l=64*u;
+    for(const [x,y,dx,dy] of [[m,m,1,1],[W-m,m,-1,1],[m,H-m,1,-1],[W-m,H-m,-1,-1]]){c.beginPath();c.moveTo(x+dx*l,y);c.lineTo(x,y);c.lineTo(x,y+dy*l);c.stroke()}
+    font(24,800,SANS);c.fillStyle=WH_;c.fillText('WEIGHT LOSS COACH',44*u,62*u);
+    font(17);c.fillStyle='#bfe6ff';c.fillText('减肥教练 · '+DATA_LABEL,44*u,90*u);
+    c.fillText(`${S.status}  HANDS ${S.hands.length}  ${S.fps} FPS  ${S.camLabel}`,44*u,116*u);
+    const keys=Object.entries(NAMES),bw=262*u,gap=8*u,bh=56*u,by=H-bh-36*u;
+    keys.forEach(([k,[en,cn,how]],i)=>{
+      const on=S.mode===k,bx=W/2-(keys.length*bw+(keys.length-1)*gap)/2+i*(bw+gap);
+      c.fillStyle=on?'rgba(57,230,255,.94)':'rgba(6,16,28,.6)';c.fillRect(bx,by,bw,bh);
+      font(17,800);c.fillStyle=on?'#00131c':WH_;c.fillText(en,bx+12*u,by+23*u);
+      font(16,600,SANS);c.fillText(cn,bx+bw-12*u-c.measureText(cn).width,by+23*u);
+      font(14,500,SANS);c.fillStyle=on?'#00131c':'#bfe6ff';c.fillText(how,bx+12*u,by+45*u);
+    });
+    if(S.mode&&(S.mode!=='lock'||now-S.lockAt<900)){const [en,cn]=NAMES[S.mode];c.textAlign='center';font(38,800,SANS);c.fillStyle=WH_;c.fillText(en,W/2,70*u);font(20,600,SANS);c.fillStyle=CY;c.fillText(cn,W/2,100*u);c.textAlign='left'}
+  }
+  if(S.err){c.textAlign='center';font(30,700,SANS);c.fillStyle=AM;c.fillText(S.err,W/2,H*.12);c.textAlign='left'}
+  c.shadowBlur=0;c.globalCompositeOperation='lighter';
+  S.sparks=S.sparks.filter(s=>(s.life-=dt)>0);
+  for(const s of S.sparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy-=dt*.8;const r=(1.6+s.life*5.6)*u;c.globalAlpha=Math.min(1,s.life*1.6);c.drawImage(SP[CY],px(s)-r,py(s)-r,r*2,r*2)}
+  c.globalAlpha=1;
+  S.rings=S.rings.filter(r=>now-r.at<1000);
+  for(const r of S.rings){const a=clamp((now-r.at)/1000,0,1),e=1-(1-a)**3;c.strokeStyle=r.color;c.globalAlpha=1-a;c.lineWidth=(14*(1-a)+1)*u;c.beginPath();c.arc(px(r),py(r),e*640*u,0,TAU);c.stroke()}
+  c.globalAlpha=1;
+  // 手指牵到全息体上的光线
+  if(S.mode==='stretch'||S.mode==='rotate'){
+    c.lineWidth=1.6*u;c.setLineDash([10*u,14*u]);c.lineDashOffset=-now*.07*u;
+    for(const h of S.hands){
+      if(h.g!=='pinch')continue;
+      const side=h.palm.x<holo.position.x?-1:1, x=px(h.tip), y=py(h.tip);
+      for(const v of [1.9,-1.9]){
+        const a=project(holo.localToWorld(new THREE.Vector3(side*3.9,v,0)));
+        c.strokeStyle=GR;c.globalAlpha=.6;c.beginPath();c.moveTo(x,y);c.lineTo(a.x*W,a.y*H);c.stroke();
+      }
+    }
+    c.setLineDash([]);c.globalAlpha=1;
+  }
+  for(const h of S.hands){
+    const col=GCOL[h.g]||CY;
+    c.strokeStyle=col;c.lineWidth=2.4*u;c.globalAlpha=.85;c.beginPath();
+    for(const [a,b] of BONES){c.moveTo(px(h.pts[a]),py(h.pts[a]));c.lineTo(px(h.pts[b]),py(h.pts[b]))}
+    c.stroke();c.globalAlpha=1;
+    h.pts.forEach((p,k)=>{const tip=k%4===0&&k>0,r=(tip?18:8)*u;c.drawImage(SP[col],px(p)-r,py(p)-r,r*2,r*2)});
+    const x=px(h.palm),y=py(h.palm),R=Math.hypot(h.pts[9].x-h.pts[0].x,h.pts[9].y-h.pts[0].y)/WH*H*.62;
+    c.strokeStyle=col;c.lineWidth=2*u;
+    for(const s of [0,1]){c.beginPath();c.arc(x,y,R*(1+s*.18),time*(s?-1.6:2.1),time*(s?-1.6:2.1)+TAU*.32);c.stroke();c.beginPath();c.arc(x,y,R*(1+s*.18),time*(s?-1.6:2.1)+Math.PI,time*(s?-1.6:2.1)+Math.PI+TAU*.32);c.stroke()}
+    if(h.hold>0){ // 张手、握拳的进度环：转满才触发
+      const col=h.g==='fist'?PK:AM;c.strokeStyle=col;c.lineWidth=7*u;
+      c.globalAlpha=.25;c.beginPath();c.arc(x,y,R*1.42,0,TAU);c.stroke();c.globalAlpha=1;
+      c.beginPath();c.arc(x,y,R*1.42,-Math.PI/2,-Math.PI/2+clamp(h.hold/HOLD,0,1)*TAU);c.stroke();
+    }
+    if(h.why&&S.chrome){ // 提示放在手的上方：手常常是从画面下边进来的
+      c.textAlign='center';font(22,700,SANS);c.fillStyle=WH_;
+      c.fillText(h.why,clamp(x,130*u,W-130*u),clamp(Math.min(...h.pts.map(py))-22*u,150*u,H-130*u));c.textAlign='left';
+    }
+  }
+  if(S.phase==='holo'){
+    const glow=(l,a,w)=>{c.strokeStyle=l.col;c.globalAlpha=a;c.lineWidth=w*u;c.beginPath();l.scr.forEach((p,i)=>i?c.lineTo(px(p),py(p)):c.moveTo(px(p),py(p)));c.stroke();c.globalAlpha=1};
+    const dot=(x,y,r)=>{c.beginPath();c.arc(x,y,r*u,0,TAU)};
+    for(const h of S.hands){
+      const x=px(h.tip),y=py(h.tip);
+      if(h.near){ // 手指快合上：这根线先亮，线上标出会抓到的位置
+        glow(h.near.l,.5,4);
+        c.strokeStyle=h.near.l.col;c.lineWidth=2.5*u;dot(px(h.near),py(h.near),11);c.stroke();
+        c.lineWidth=1.5*u;c.beginPath();c.moveTo(x,y);c.lineTo(px(h.near),py(h.near));c.stroke();
+      }
+      if(h.g==='pinch'){ // 捏上那一刻圈收紧成实心点，闪一下
+        const a=clamp((now-h.gAt)/180,0,1);
+        c.strokeStyle=GR;c.lineWidth=(2+5*(1-a))*u;dot(x,y,14+46*(1-a)**2);c.stroke();
+        c.fillStyle=a<1?'#fff':GR;dot(x,y,7);c.fill();
+      }else if(h.g!=='fist'&&h.gap<PIN*2.2){ // 手指靠近：圈跟着收，告诉你还差多少
+        const f=clamp((h.gap-PIN)/(PIN*1.2),0,1);
+        c.strokeStyle=GR;c.globalAlpha=.95-.65*f;c.lineWidth=2*u;dot(x,y,14+46*f);c.stroke();c.globalAlpha=1;
+      }
+    }
+    if(S.scan){const a=clamp((now-(S.ref?.at??now))/320,0,1);glow(S.scan.line,.75+.25*(1-a),4+8*(1-a))} // 抓到线：整根线亮一下
+    S.pops=S.pops.filter(p=>now-p.at<260);
+    for(const p of S.pops){const a=(now-p.at)/260;c.strokeStyle=GR;c.globalAlpha=1-a;c.lineWidth=3*u;dot(px(p),py(p),14+56*a);c.stroke();c.globalAlpha=1} // 松手：圈弹开
+  }else S.pops=[];
+  if(S.scan){
+    const {r,kg,line,x:sx,y:sy,top,bot}=S.scan, col=line.col, qx=px({x:sx}), qy=py({y:sy});
+    c.strokeStyle=col;c.lineWidth=3*u;c.beginPath();c.moveTo(top.x*W,top.y*H);c.lineTo(bot.x*W,bot.y*H);c.stroke();
+    c.fillStyle='#fff';c.beginPath();c.arc(qx,qy,9*u,0,TAU);c.fill();c.strokeStyle=col;c.lineWidth=4*u;c.beginPath();c.arc(qx,qy,15*u,0,TAU);c.stroke();
+    c.globalCompositeOperation='source-over';
+    const bw=330*u,bh=(r.note?178:144)*u,bx=clamp(qx+24*u,10*u,W-bw-10*u),by=clamp(qy-bh-24*u,10*u,H-bh-10*u);
+    c.fillStyle='rgba(8,8,26,.82)';c.fillRect(bx,by,bw,bh);c.strokeStyle=col;c.lineWidth=2*u;c.strokeRect(bx,by,bw,bh);
+    font(20);c.fillStyle='#fff';c.fillText(r.date,bx+16*u,by+32*u);
+    font(18);c.fillStyle=col;c.fillText(`${line.en} ${line.cn}`,bx+16*u,by+58*u);
+    font(46,800,SANS);c.fillStyle='#fff';c.fillText(`${kg.toFixed(1)} kg`,bx+16*u,by+106*u);
+    font(18);c.fillStyle=line.key==='avg'?CY:AM;c.fillText(line.key==='avg'?`DAILY ${r.kg.toFixed(1)}`:`7-DAY AVG ${r.avg?r.avg.toFixed(2):'--'}`,bx+16*u,by+132*u);
+    if(r.note){font(22,700,SANS);c.fillStyle='#fff';c.fillText(r.note.slice(0,14),bx+16*u,by+162*u)}
+  }
+  c.globalCompositeOperation='source-over';
+  if(S.flash>0){c.fillStyle=`rgba(190,235,255,${S.flash})`;c.fillRect(0,0,W,H);S.flash=Math.max(0,S.flash-dt*1.3)}
+}
+
+// ---------- 尺寸、主循环、按键
+function fit(){
+  const w=Math.min(innerWidth,innerHeight*A),h=w/A;
+  stage.style.width=w+'px';stage.style.height=h+'px';S.Hc=h;
+  renderer.setPixelRatio(S.dpr);renderer.setSize(w,h,false);
+  composer.setPixelRatio(S.dpr);composer.setSize(w,h);
+  hud.width=w*S.dpr;hud.height=h*S.dpr;U.uPx.value=h*S.dpr*.03;
+}
+addEventListener('resize',fit);fit();
+let prevT=performance.now(),fpsN=0,fpsAt=prevT;
+function frame(raf){
+  requestAnimationFrame(frame);
+  const now=Q.get('video')?Math.floor(video.currentTime*30)/30*1000:raf; // 测试视频按视频时间走，慢放和隐藏窗口卡顿都不影响手势判断
+  if(now-prevT>300){fpsN=0;fpsAt=now} // 切走回来不算掉帧
+  const dt=Math.min(.05,Math.max(0,(now-prevT)/1000));prevT=now;
+  U.uTime.value+=dt;
+  const c0=performance.now();track(now);const c1=performance.now();logic(now,dt);composer.render();drawHud(now,dt);S.ms=[c1-c0,performance.now()-c1].map(v=>+v.toFixed(1));
+  fpsN++;
+  if(now-fpsAt>1500){
+    S.fps=Math.round(fpsN*1000/(now-fpsAt));fpsN=0;fpsAt=now;
+    if(S.fps<26&&S.dpr*S.Hc>1200){S.dpr*=.85;fit()} // 录屏时掉帧就自动降一点分辨率
+  }
+}
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='h')S.chrome=!S.chrome;
+  if(k==='f')document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+  if(k==='c')nextCam();
+  if(k==='s'&&S.phase==='idle')summon({x:0,y:0});
+  if(k==='x'&&S.phase==='holo')dissolve({x:0,y:-1});
+});
+addEventListener('error',e=>{S.err='页面出错：'+e.message});
+
+if(Q.has('test')){ // 打开 ?test 跑一遍，结果写到标题和 window.__selftest
+  const fails=[],eq=(a,b,n)=>{if(a!==b)fails.push(`${n}: ${a} != ${b}`)};
+  for(const [d,v] of [['2026-10-18','81.39'],['2026-10-25','81.22'],['2026-11-01','80.65']])eq(rows.find(r=>r.date===d).avg.toFixed(2),v,'avg '+d);
+  eq(toGoal.toFixed(1),'5.4','toGoal');eq(lost.toFixed(1),'1.6','lost');eq(planAt(0),82,'plan0');
+  const hand=(fingers,rot=0,thumbTip=[.09,.1])=>{
+    const P=[[0,0,0],[.05,.03,0],[.07,.06,0],[.08,.08,0],[...thumbTip,0]];
+    [-.03,-.01,.01,.03].forEach((x,i)=>{P.push(...(fingers[i]==='up'?[[x,.09,0],[x,.12,0],[x,.15,0],[x,.18,0]]
+      :fingers[i]==='pinch'?[[x,.09,0],[x,.12,0],[x+.02,.125,0],[x+.04,.11,0]]:[[x,.09,0],[x,.115,.01],[x,.1,.03],[x,.08,.02]]))});
+    return P.map(([x,y,z])=>({x:x*Math.cos(rot)-y*Math.sin(rot),y:x*Math.sin(rot)+y*Math.cos(rot),z}));
+  };
+  const up=['up','up','up','up'],curl=['c','c','c','c'];
+  for(const rot of [0,2.1,-1.2,3.1]){
+    eq(classify(hand(up,rot)),'open','open '+rot);
+    eq(classify(hand(curl,rot,[.0,.09])),'fist','fist '+rot);
+    eq(classify(hand(curl,rot,[-.03,.08])),'fist','fist thumb on index '+rot);
+    eq(classify(hand(['pinch','c','c','c'],rot,[.012,.105])),'pinch','pinch '+rot);
+    eq(classify(hand(['pinch','up','up','up'],rot,[.012,.105])),'pinch','ok hand is a pinch '+rot);
+    eq(classify(hand(['pinch','c','c','c'],rot,[.06,.1])),'none','just released '+rot);
+    eq(classify(hand(['up','c','c','c'],rot)),'none','point '+rot);
+  }
+  // 滤波：静止时抖动压到一半以下，匀速 5 单位/秒时落后不超过 .15 单位（30 毫秒）
+  let seed=1;const noise=()=>{let n=0;for(let i=0;i<6;i++){seed=seed*16807%2147483647;n+=seed/2147483647-.5}return n*.03};
+  const sd=a=>{const m=a.reduce((p,q)=>p+q,0)/a.length;return Math.sqrt(a.reduce((p,q)=>p+(q-m)**2,0)/a.length)};
+  let ef={},a0=[],a1=[];for(let i=0;i<300;i++){const n=noise(),y=euro(ef,n,1/30);if(i>60){a0.push(n);a1.push(y)}}
+  eq(sd(a1)<sd(a0)*.5,true,'filter cuts jitter');
+  ef={};let lag=0;for(let i=0;i<120;i++){const x=i/30*5;lag=x-euro(ef,x,1/30)}
+  eq(lag<.15,true,'filter keeps up: '+lag);
+  // 状态机
+  const fake=(g,x,y)=>{const p={x,y};return {g,cand:'pinch',gAt:-1e4,palm:p,grip:p,tip:p,size:1,gap:g==='pinch'?.1:.9,hold:0,speed:0,inFrame:true,pts:Array.from({length:21},()=>p)}};
+  const to=(h,x,y)=>{h.palm=h.grip=h.tip={x,y}};
+  let clock=1e6;const run=(hs,n=40)=>{S.hands=hs;for(let i=0;i<n;i++)logic(clock+=33,.033)};
+  const near=(a,b,n)=>{if(Math.abs(a-b)>1e-6)fails.push(`${n}: ${a} != ${b}`)};
+  const n=Math.ceil(HOLD/.033);
+  // 张手：碰到边、在动、停得不够久都不触发
+  let h=fake('open',0,0);h.inFrame=false;run([h],n*2);eq(S.phase,'idle','open at edge');eq(S.charge,0,'no progress at edge');eq(h.why,'整只手进画面','edge hint');
+  h.inFrame=true;h.speed=3;run([h],n*2);eq(S.phase,'idle','open moving');eq(h.why,'停住不动','moving hint');
+  h.speed=0;run([h],n-3);eq(S.phase,'idle','open too short');eq(S.charge>.8,true,'progress shows');
+  h.speed=3;run([h],4);eq(S.charge<.8,true,'moving rolls back');
+  h.speed=0;run([h],n);eq(S.phase,'summon','open held still summons');
+  S.phase='holo';S.m=1;Object.assign(S.t,start);Object.assign(S.cur,start);
+  // 没捏就不动
+  let view=JSON.stringify(S.cur);
+  run([fake('open',-3,0)]);run([fake('open',3,2)]);run([]);eq(JSON.stringify(S.cur),view,'open hand moves view');
+  // 捏在空白处：转
+  const p=fake('pinch',-7,4);run([p]);eq(S.mode,'rotate','grab empty space rotates');near(S.t.ry,0,'no jump on grab');
+  to(p,-5,4);run([p],1);near(S.t.ry,2*TURN*ROT,'left-right -> ry');
+  to(p,-5,5);run([p],1);near(S.t.rx,-TURN*ROT,'up-down -> rx');
+  to(p,-5,4);run([p],1);near(S.t.rx,0,'back down');
+  to(p,-5,30);run([p],1);near(S.t.rx,-1,'rx limit');to(p,-5,29);run([p],1);near(S.t.rx,-1+TURN*ROT,'hand back -> view back at once');
+  logic(clock+=33,.033);eq(S.cur.ry!==S.t.ry,true,'still gliding before release');
+  to(p,-5,28);p.cand='none';view=JSON.stringify(S.cur);run([p],1);eq(JSON.stringify(S.cur),view,'fingers apart: view stops before release is confirmed');
+  p.g='none';p.gap=.9;run([p],1);view=JSON.stringify(S.cur);eq(S.mode,'lock','release');
+  run([p],60);run([fake('open',-4,2)],60);eq(JSON.stringify(S.cur),view,'frozen after release');
+  // 捏在线上：抓线，读数跟手走，视图不动
+  run([]);const q=S.lines[1].scr[9],on=fake('none',q.x,q.y);on.gap=PIN*1.5;run([on],1);eq(on.near?.l.key,'avg','hover shows the line');
+  on.g='pinch';on.gap=.1;run([on],1);eq(S.mode,'scan','pinch on a line');eq(S.scan?.line.key,'avg','caught the line under the fingers');eq(JSON.stringify(S.cur),view,'catching keeps view');
+  const q2=S.lines[1].scr[14];to(on,q2.x,q2.y+.3);run([on],5);eq(S.scan.r,S.lines[1].pts[14].r,'readout follows the fingers');eq(JSON.stringify(S.cur),view,'sliding keeps view');
+  on.g='none';run([on],1);eq(S.mode,'lock','release line');eq(S.scan,null,'readout gone');
+  const fq=fake('fist',q.x,q.y);fq.gap=.1;run([fq],1);eq(fq.near,null,'fist never hovers a line');
+  // 两只手：缩放，先捏哪只都行，到头手一往回就跟
+  const a=fake('pinch',-7,4),b=fake('pinch',-5,4);S.t.s=S.cur.s=.5;run([a]);b.gAt=clock;run([a,b],1);eq(S.mode,'rotate','fresh second hand waits');run([a,b]);eq(S.mode,'stretch','stretch');near(S.t.s,.5,'no jump on stretch');
+  to(a,-8,4);to(b,-4,4);run([b,a],1);near(S.t.s,1,'pull apart doubles');
+  to(a,-20,4);to(b,4,4);run([a,b],1);near(S.t.s,1.5,'zoom limit');to(a,-18,4);to(b,2,4);run([a,b],1);near(S.t.s,1.25,'hands back -> zoom back at once');
+  a.g='none';a.gap=.9;run([a,b],1);eq(S.mode,'rotate','one hand left rotates');eq(S.ref.line,null,'one hand left does not catch a line');b.g='none';b.gap=.9;run([a,b],1);eq(S.mode,'lock','both released');
+  // 握拳：同样要在画面内、停住
+  let f=fake('fist',0,0);f.inFrame=false;run([f],n*2);eq(S.phase,'holo','fist at edge');f.inFrame=true;f.speed=3;run([f],n*2);eq(S.phase,'holo','fist moving');
+  f.speed=0;run([f],n-3);eq(S.phase,'holo','fist too short');eq(S.mode,'dissolve','fist shows progress');run([f],4);eq(S.phase==='dissolve'||S.phase==='idle',true,'fist held still dissolves');
+  // 双手唰开、合拢。间距单位是手掌长（假手的手掌长 = 1）
+  const setup=(ph,hands=[])=>{Object.assign(S,{phase:ph,m:ph==='holo'?1:0,mode:'',ref:null,scan:null,pair:[],pinchAt:-1e4,lastDissolve:-1e4,duo:false,latch:false,sparks:[],rings:[]});S.hands=hands;clock+=1000};
+  const hand2=(g,x,y=0)=>Object.assign(fake(g,x,y),{cand:g});
+  const swing=(a,b,[a0,a1],[b0,b1],frames,dy=[0,0])=>{for(let i=1;i<=frames;i++){const u=i/frames;a.palm={x:a0+(a1-a0)*u,y:a.palm.y+(dy[0]/frames)};b.palm={x:b0+(b1-b0)*u,y:b.palm.y+(dy[1]/frames)};run([a,b],1)}};
+  const still=(hs,k=8)=>{setup('idle');run(hs,k)};
+  let l,r;
+  // 唰开：并拢、快速分开，当场召唤，粒子从两手中间出发
+  l=hand2('open',2.5,2);r=hand2('open',3.5,2);still([l,r]);swing(l,r,[2.5,.5],[3.5,5.5],6);
+  eq(S.phase,'summon','swipe open summons');eq(S.duo,true,'swipe open is the two-hand version');near(U.uOrigin.value.x,3,'origin between hands x');near(U.uOrigin.value.y,2,'origin between hands y');
+  // 并拢不动：不走单手停住那条路，也不算唰
+  l=hand2('open',-.5);r=hand2('open',.5);still([l,r],n*3);eq(S.phase,'idle','hands together held still stays idle');eq(S.charge,0,'no ring while hands together');eq(l.why+r.why,'向两侧唰地拉开','hint to swipe');
+  // 两手分开、都不动：单手那条路还在
+  l=hand2('open',-5);r=hand2('open',5);still([l,r],n+2);eq(S.phase,'summon','apart and still still summons by holding');eq(S.duo,false,'holding is not the two-hand version');
+  // 慢慢拉开、只动一只、本来就分得开、上下分开、碰边、不是张手：都不算
+  l=hand2('open',-.5);r=hand2('open',.5);l.speed=r.speed=9;still([l,r]);swing(l,r,[-.5,-2.5],[.5,2.5],30);eq(S.phase,'idle','slow pull-apart');
+  l=hand2('open',-.5);r=hand2('open',.5);still([l,r]);swing(l,r,[-.5,-.5],[.5,5],6);eq(S.phase,'idle','one hand moves');
+  l=hand2('open',-2);r=hand2('open',2);l.speed=r.speed=9;still([l,r]);swing(l,r,[-2,-6],[2,6],6);eq(S.phase,'idle','starts apart');
+  l=hand2('open',0,-.5);r=hand2('open',0,.5);still([l,r]);swing(l,r,[0,0],[0,0],6,[-3,3]);eq(S.phase,'idle','up and down');
+  l=hand2('open',-.5);r=hand2('open',.5);l.inFrame=false;still([l,r]);swing(l,r,[-.5,-3],[.5,3],6);eq(S.phase,'idle','hand at edge');
+  for(const g of ['fist','pinch','none']){l=hand2(g,-.5);r=hand2(g,.5);still([l,r]);swing(l,r,[-.5,-3],[.5,3],6);eq(S.phase,'idle',g+' pair apart')}
+  l=hand2('open',-.5);r=hand2('pinch',.5);still([l,r]);swing(l,r,[-.5,-3],[.5,3],6);eq(S.phase,'idle','one open one pinch');
+  // 动得不够远：手大时同样的距离算小动作
+  l=hand2('open',-1);r=hand2('open',1);l.size=r.size=2;l.speed=r.speed=9;still([l,r]);swing(l,r,[-1,-1.5],[1,1.5],3);eq(S.phase,'idle','short move for a big hand');
+  // 手交叠：模型只看到一只，分开时另一只才出现
+  l=hand2('open',0);r=hand2('open',.8);l.speed=9;still([l]);l.palm={x:-.8,y:0};run([l,r],3);swing(l,r,[-.8,-3],[.8,3],4);eq(S.phase,'summon','swipe from overlapped hands');
+  // 并拢后模型只看到一只：不走停住那条路；放下再举才算单手；并拢后分开走唰
+  l=hand2('open',-.5);r=hand2('open',.5);still([l,r]);run([l],n+2);eq(S.phase,'idle','merged hands wait for the swipe');eq(l.why,'向两侧唰地拉开','merged hint');
+  run([],1);run([l],n+2);eq(S.phase,'summon','hand down and up holds again');
+  // 假手：闪出来一只，真手自己没动，不算
+  l=hand2('open',-3);l.speed=9;still([l]);r=hand2('open',4);run([l,r],4);eq(S.phase,'idle','ghost hand');
+  l=hand2('open',0);l.speed=9;still([l]);r=hand2('open',3);r.frames=1;swing(l,r,[0,-2],[3,3],4);eq(S.phase,'idle','one-frame ghost while the real hand moves');
+  // 合拢：两只张开的手快速合到一起，当场消散
+  setup('holo');l=hand2('open',-4,1);r=hand2('open',4,1);run([l,r],4);swing(l,r,[-4,-.6],[4,.6],6);
+  eq(S.phase,'dissolve','swipe close dissolves');eq(S.duo,true,'close is the two-hand version');near(U.uOrigin.value.y,1,'origin between hands');
+  // 合拢之后手还并在一起：不会又被当成张手召唤回来，分开或放下才解开；.9 秒内也不许弹回来
+  const single=hand2('open',0);run([single],200);eq(S.phase,'idle','dissolve finishes');eq(S.charge,0,'together hands do not re-summon');
+  run([],1);run([single],n+2);eq(S.phase,'summon','hand down and up summons again');
+  setup('holo');l=hand2('open',-4);r=hand2('open',4);run([l,r],4);swing(l,r,[-4,-.6],[4,.6],6);run([l,r],4);S.m=0;S.phase='idle';swing(l,r,[-.6,-3],[.6,3],5);eq(S.phase,'idle','no bounce right after closing');
+  // 缩放：捏着快速拉开合拢，永远不触发；松手后 .5 秒内还在动也不算，之后才算
+  setup('holo');l=hand2('pinch',-.6);r=hand2('pinch',.6);l.gAt=r.gAt=-1e4;run([l,r],4);eq(S.mode,'stretch','zoom with pinch');swing(l,r,[-.6,-4],[.6,4],6);swing(l,r,[-4,-.6],[4,.6],6);eq(S.phase,'holo','fast pinch zoom never dissolves');eq(S.mode,'stretch','still zooming');
+  swing(l,r,[-.6,-5],[.6,5],6);l.g=r.g=l.cand=r.cand='open';swing(l,r,[-5,-.6],[5,.6],6);eq(S.phase,'holo','release while closing is not a swipe');
+  l.palm={x:-5,y:0};r.palm={x:5,y:0};run([l,r],18);swing(l,r,[-5,-.6],[5,.6],6);eq(S.phase,'dissolve','swipe after zoom works');
+  // 其余都不算
+  setup('holo');l=hand2('open',-5);r=hand2('open',5);run([l,r],4);swing(l,r,[-5,-.6],[5,.6],60);eq(S.phase,'holo','slow close');
+  setup('holo');l=hand2('open',-7);r=hand2('open',7);run([l,r],4);swing(l,r,[-7,-4],[7,4],4);eq(S.phase,'holo','close but not together');
+  setup('holo');l=hand2('open',-5);r=hand2('open',.6);run([l,r],4);swing(l,r,[-5,-.6],[.6,.6],4);eq(S.phase,'holo','one hand closes');
+  setup('holo');l=hand2('open',-.6);r=hand2('open',.6);run([l,r],4);swing(l,r,[-.6,-5],[.6,5],6);eq(S.phase,'holo','swipe open while holo is showing');
+  setup('idle');l=hand2('open',-5);r=hand2('open',5);run([l,r],4);swing(l,r,[-5,-.6],[5,.6],6);eq(S.phase,'idle','swipe close with nothing showing');
+  setup('holo');l=hand2('fist',-5);r=hand2('fist',5);run([l,r],4);swing(l,r,[-5,-.6],[5,.6],6);eq(S.phase,'holo','fists together do not count as swipe close');
+  setup('idle');
+  Object.assign(S,{phase:'idle',m:0,mode:'',hands:[],ref:null,scan:null,log:[],flash:0,rings:[],lockAt:-1e4,lastDissolve:-1e4,boomed:true});Object.assign(S.t,start);Object.assign(S.cur,start);
+  window.__selftest=fails;document.title=fails.length?'SELFTEST FAIL':'SELFTEST OK';console.log(document.title,fails);
+}
+requestAnimationFrame(frame);
+startCam(localStorage.getItem('cam'));startHands();
+</script>
+</body>
+</html>
