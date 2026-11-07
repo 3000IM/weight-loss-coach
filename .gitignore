@@ -1,0 +1,9 @@
+.env
+.env.*
+.tmp/
+.DS_Store
+# 用户数据不进 repo
+/data/
+weight-loss-data/
+/examples/*/dashboard.html
+__pycache__/
