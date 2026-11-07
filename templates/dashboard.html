@@ -245,7 +245,7 @@ const $ = (id) => document.getElementById(id);
 const STILL = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const dayNo = (s) => Date.parse(s + "T00:00:00Z") / 864e5;
 const fmt = (x, n = 1) => x === null || x === undefined ? "—" : Number(x).toFixed(n);
-const signed = (x, n = 1) => x === null || x === undefined ? "—" : (x < 0 ? "−" : x > 0 ? "+" : "") + Math.abs(x).toFixed(n);
+const signed = (x, n = 1) => { if (x === null || x === undefined) return "—"; const r = +x.toFixed(n); return (r < 0 ? "−" : r > 0 ? "+" : "") + Math.abs(r).toFixed(n); };
 const md = (s) => +s.slice(5, 7) + "/" + +s.slice(8, 10);
 const WEEK = "日一二三四五六";
 
@@ -396,13 +396,18 @@ if (DATA.empty) {
   const s = DATA.stats, wk = Object.fromEntries(DATA.week);
   $("app").hidden = false; $("raw").hidden = false; $("chip").hidden = !DATA.example;
   $("weekno").textContent = s.week_no ? `第 ${s.week_no} 周` : "";
-  const go = s.to_go === null ? "—" : Math.max(0, s.to_go).toFixed(1), pct = s.progress_pct ?? 0, wide = innerWidth >= 1000;
-  const size = go.length > 3 ? (wide ? 230 : 150) : (wide ? 300 : 196), togo = $("togo"), giant = togo.parentElement;
-  togo.style.setProperty("--size", size + "px");
+  const go = s.to_go === null ? "—" : Math.max(0, s.to_go).toFixed(1), pct = s.progress_pct ?? 0;
+  const togo = $("togo"), giant = togo.parentElement;
   slot(togo, go, "", 500);
-  // 手机字体随机型变，放不下就按实际宽度缩，免得 KG 被切掉
-  const room = giant.clientWidth - (giant.scrollWidth - togo.offsetWidth);
-  if (togo.offsetWidth > room) togo.style.setProperty("--size", size * room / togo.offsetWidth + "px");
+  // 手机字体随机型变，放不下就按实际宽度缩，免得 KG 被切掉。字体异步加载，到位后要再量一次。留 7% 给 punch 动画的放大
+  const fit = () => {
+    const wide = innerWidth >= 1000, size = go.length > 3 ? (wide ? 230 : 150) : (wide ? 300 : 196);
+    togo.style.setProperty("--size", size + "px");
+    const kg = giant.querySelector("em"), room = (giant.clientWidth - kg.offsetWidth - parseFloat(getComputedStyle(kg).marginLeft)) * .93;
+    if (togo.offsetWidth > room) togo.style.setProperty("--size", size * room / togo.offsetWidth + "px");
+  };
+  fit();
+  document.fonts.ready.then(fit);
   $("fill").style.setProperty("--pct", pct + "%");
   $("from").textContent = `起点 ${fmt(s.start_weight)}`;
   $("pct").textContent = `已走 ${pct}%`;
@@ -410,7 +415,7 @@ if (DATA.empty) {
   if (s.change_from_start === null) $("badge").hidden = true;
   else {
     const lost = s.change_from_start <= 0;
-    $("lost").textContent = (lost ? "−" : "+") + Math.abs(s.change_from_start).toFixed(1);
+    $("lost").textContent = signed(s.change_from_start);
     $("aroundText").textContent = (lost ? "已经掉了 KG · " : "比起点多了 KG · ").repeat(2);
   }
   const tape = [`还差 ${go} KG`, `已走 ${pct}%`, DATA.eta ? `预计 ${DATA.eta}` : "", s.next_review ? `下次复盘 ${s.next_review}` : "", `数据截至 ${s.last_date}`].filter(Boolean).join(" ★ ") + " ★ ";
@@ -439,7 +444,7 @@ if (DATA.empty) {
   $("replay").addEventListener("click", () => location.reload());
   render(!STILL);
   let frame;
-  addEventListener("resize", () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => render(false)); });
+  addEventListener("resize", () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { fit(); render(false); }); });
 }
 </script>
 </body>

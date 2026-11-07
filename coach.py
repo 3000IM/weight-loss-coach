@@ -4,11 +4,12 @@
 只用标准库，Python 3.9+，Mac 和 Windows 都能跑。子命令：
   init        建数据目录，放好空模板（已有的文件不动）
   calc        按身高体重等算每天热量、蛋白、每周该掉多少、预计几周到
-  stats       读数据，输出 7 天平均、本周变化、和计划比（JSON）
-  dashboard   把数据渲成本地网页 dashboard.html
+  stats       读数据，输出 7 天平均、本周变化、和计划比、解锁进度（JSON）
+  import      补录几天的「日期 体重 腰围 备注」，文件或标准输入
+  dashboard   记满 7 天后把数据渲成本地网页 dashboard.html
   remind      今天没记体重就弹一条系统通知（定时任务跑的就是它）
   reminder    on HH:MM / off / status，管每天定时提醒
-  selftest    跑自检
+  --selfcheck 跑自检
 """
 import argparse
 import json
@@ -29,6 +30,7 @@ DEFAULT_DATA = Path.home() / "weight-loss-data"
 MAC_LABEL = "com.weightloss.reminder"
 WIN_TASK = "WeightLossReminder"
 KCAL_PER_KG = 7700
+UNLOCK_DAYS = 7  # 记满几天才解锁看板
 
 
 def read(path):
@@ -79,19 +81,21 @@ def calc(sex, age, height, weight, target, by=None, activity=1.375, today=None):
     if rate < 0.05:
         return {**out, "ok": False, "stop": "维持热量已经接近安全下限，靠少吃做不出缺口，先增加日常活动量或问医生、营养师"}
 
-    weeks = math.ceil((weight - target) / rate)
+    days_needed = round((weight - target) / rate * 7)
+    shown_maintenance, shown_kcal = round(maintenance / 50) * 50, max(round(kcal / 50) * 50, floor)
     return {
         **out,
         "ok": True,
         "bmr": round(bmr),
-        "maintenance_kcal": round(maintenance / 50) * 50,
-        "kcal": max(round(kcal / 50) * 50, floor),
+        "maintenance_kcal": shown_maintenance,
+        "kcal": shown_kcal,
+        "deficit_kcal": shown_maintenance - shown_kcal,
         "kcal_floor": floor,
         "protein_low": round(target * 1.6),
         "protein_high": round(target * 2.0),
         "weekly_loss_kg": round(rate, 2),
-        "weeks": weeks,
-        "eta": (today + timedelta(weeks=weeks)).isoformat(),
+        "weeks": max(1, round(days_needed / 7)),
+        "eta": (today + timedelta(days=days_needed)).isoformat(),
     }
 
 
@@ -134,6 +138,43 @@ def load_log(data):
     return [rows[d] for d in sorted(rows)]
 
 
+def import_log(data, text, to_today=False, today=None):
+    """补录：每行「日期 体重 腰围 备注」，逗号或空格隔开。有一行不对就整批不写，免得账本进半截数据。"""
+    today = today or date.today()
+    plan, path = load_plan(data), Path(data) / "log.md"
+    if not plan or not num(plan.get("目标体重 kg")) or not path.exists():
+        sys.exit("还没定计划，先走第一次用的问答")
+    new, bad = {}, []
+    for n, line in enumerate(x for x in text.splitlines() if x.strip()):
+        cells = re.split(r"[,，]", line, maxsplit=3) if re.search(r"[,，]", line) else line.split(None, 3)
+        cells = [c.strip() for c in cells] + [""] * (4 - len(cells))
+        try:
+            weight = float(cells[1])
+            if not 20 <= weight <= 400:
+                raise ValueError
+            d = date.fromisoformat(cells[0])
+            new[d] = {"date": d, "weight": weight, "waist": float(cells[2]) if cells[2] else None, "note": cells[3]}
+        except ValueError:
+            if n or re.search(r"\d", cells[0]):  # 第一行第一格没有数字就是表头
+                bad.append(line)
+    if new and to_today:
+        gap = today - max(new)
+        new = {d + gap: {**r, "date": d + gap} for d, r in new.items()}
+    bad += [f"{d}（未来日期）" for d in new if d > today]
+    if bad or not new:
+        sys.exit("没有写入。这几行有问题，要写成「YYYY-MM-DD 体重kg 腰围 备注」：\n" + "\n".join(bad))
+
+    merged = {r["date"]: r for r in load_log(data)}
+    for d, r in new.items():
+        old = merged.get(d, {})  # 这次没报的腰围和备注不能冲掉已有的
+        merged[d] = {**r, "waist": r["waist"] if r["waist"] is not None else old.get("waist"), "note": r["note"] or old.get("note", "")}
+    head = [x for x in read(path).splitlines() if not re.match(r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|", x)]
+    cell = lambda v: "" if v is None else v
+    rows = [f"| {d} | {cell(r['weight'])} | {cell(r['waist'])} | {r['note']} |" for d, r in sorted(merged.items())]
+    path.write_text("\n".join(["\n".join(head).rstrip()] + rows) + "\n", encoding="utf-8")
+    return len(new)
+
+
 def window_mean(rows, end, key="weight", min_n=3):
     vals = [r[key] for r in rows if r[key] is not None and end - timedelta(days=6) <= r["date"] <= end]
     return round(statistics.mean(vals), 2) if len(vals) >= min_n else None
@@ -171,6 +212,7 @@ def stats(data, as_of=None):
     target = num(plan.get("目标体重 kg"))
     start = num(plan.get("起始体重 kg"))
     next_review = day(plan.get("下次复盘"))
+    days = sum(r["weight"] is not None for r in rows)
     out = {
         "as_of": today.isoformat(),
         "logged_today": any(r["date"] == today and r["weight"] is not None for r in rows),
@@ -182,6 +224,10 @@ def stats(data, as_of=None):
         "protein": plan.get("每天蛋白 g", ""),
         "next_review": next_review.isoformat() if next_review else None,
         "review_due": bool(next_review and today >= next_review),
+        "days_logged": days,
+        "days_to_unlock": max(0, UNLOCK_DAYS - days),
+        "unlocked": days >= UNLOCK_DAYS,
+        "first_unlock": days >= UNLOCK_DAYS and not (Path(data) / "dashboard.html").exists(),  # 页面只在解锁后生成，没有就是还没开过
         "weeks": [],
     }
     weighed = [r for r in rows if r["weight"] is not None]
@@ -373,6 +419,8 @@ def selftest():
     assert plan["ok"] and plan["bmr"] == 1769 and plan["maintenance_kcal"] == 2450, plan
     assert plan["kcal"] == 1950 and plan["weekly_loss_kg"] == 0.44 and plan["weeks"] == 16, plan
     assert plan["protein_low"] == 120 and plan["protein_high"] == 150, plan
+    dated = calc("m", 24, 175, 86, 78, date(2027, 2, 6), 1.375, date(2026, 11, 6))
+    assert dated["eta"] == "2027-02-06" and dated["weeks"] == 13 and dated["deficit_kcal"] == 700, dated
     tight = calc("f", 28, 160, 60, 52, date(2026, 11, 1), 1.2, date(2026, 10, 12))
     assert "date_too_tight" in tight["warnings"] and tight["kcal"] >= 1200, tight
     assert tight["weekly_loss_kg"] <= 0.6, tight
@@ -402,12 +450,48 @@ def selftest():
             f.write("| 2026-11-02 | 79.8 |  | </script><b>x |\n")
         html = build_dashboard(tmp).read_text(encoding="utf-8")
         assert "/*__DATA__*/" not in html and "</script><b>" not in html, "备注里的标签不能破坏页面"
-    print("selftest ok")
+
+    seven = read(HERE / "examples" / "seven-days.csv").splitlines()  # 表头加 7 天
+    last = date(2026, 11, 6)
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(example / "plan.md", tmp)
+        shutil.copy(HERE / "templates" / "log.md", tmp)
+        log_before = read(Path(tmp) / "log.md")
+        for wrong in ("2026-11-01 不是数字", "2026-11-01 86\n2026-13-01 86", "2027-01-01 86"):
+            try:
+                import_log(tmp, wrong, today=last)
+                raise AssertionError(f"这批该被拒绝：{wrong}")
+            except SystemExit:
+                assert read(Path(tmp) / "log.md") == log_before, "有错的一批不能写进一半"
+        assert import_log(tmp, "\n".join(seven[:7]), today=last) == 6
+        s = stats(tmp, last)
+        assert s["days_logged"] == 6 and s["days_to_unlock"] == 1 and not s["unlocked"] and not s["first_unlock"], s
+        coach = [sys.executable, str(HERE / "coach.py"), "dashboard", "--data", tmp]
+        assert "还差 1 天" in run_quiet(coach).stdout and not (Path(tmp) / "dashboard.html").exists(), "6 天不出页面"
+        assert import_log(tmp, seven[7], today=last) == 1
+        s = stats(tmp, last)
+        assert s["days_logged"] == 7 and s["unlocked"] and s["first_unlock"], s
+        run_quiet(coach)
+        assert (Path(tmp) / "dashboard.html").exists() and not stats(tmp, last)["first_unlock"], "开过一次就不算第一次"
+        import_log(tmp, "2026-11-01 85.2", today=last)
+        kept = [r for r in load_log(tmp) if r["date"] == date(2026, 10, 31)][0]
+        assert kept["waist"] == 92.0 and load_log(tmp)[1]["weight"] == 85.2 and len(load_log(tmp)) == 7, "覆盖同一天，不丢别的"
+        import_log(tmp, "2026-10-31,85.9,,补的备注", today=last)
+        assert load_log(tmp)[0]["waist"] == 92.0 and load_log(tmp)[0]["note"] == "补的备注", "这次没报腰围不冲掉"
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(example / "plan.md", tmp)
+        shutil.copy(HERE / "templates" / "log.md", tmp)
+        moved = date(2027, 3, 1)
+        assert import_log(tmp, "\n".join(seven), to_today=True, today=moved) == 7
+        assert load_log(tmp)[-1]["date"] == moved and stats(tmp, moved)["unlocked"], "演示数据平移到以今天结尾"
+    print("selfcheck ok")
 
 
 def main():
     if sys.stdout:  # pythonw 下没有 stdout
         sys.stdout.reconfigure(encoding="utf-8")
+    if sys.argv[1:] == ["--selfcheck"]:
+        return selftest()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
@@ -425,6 +509,9 @@ def main():
     c.add_argument("--as-of", type=date.fromisoformat, help="按哪天算，默认今天")
     st = sub.add_parser("stats", parents=[common])
     st.add_argument("--as-of", type=date.fromisoformat)
+    im = sub.add_parser("import", parents=[common])
+    im.add_argument("file", help="CSV 路径，- 表示从标准输入读")
+    im.add_argument("--to-today", action="store_true", help="整批平移到以今天结尾，录演示用")
     d = sub.add_parser("dashboard", parents=[common])
     d.add_argument("--open", action="store_true", help="生成后用默认浏览器打开")
     r = sub.add_parser("remind", parents=[common])
@@ -432,7 +519,6 @@ def main():
     rr = sub.add_parser("reminder", parents=[common])
     rr.add_argument("action", choices=["on", "off", "status"])
     rr.add_argument("time", nargs="?", help="HH:MM")
-    sub.add_parser("selftest")
     a = ap.parse_args()
 
     if a.cmd == "init":
@@ -446,17 +532,22 @@ def main():
     elif a.cmd == "stats":
         s = stats(a.data, a.as_of)
         print(json.dumps(s if s else {"error": f"{a.data} 里没有 plan.md，先走第一次用的问答"}, ensure_ascii=False, indent=1))
+    elif a.cmd == "import":
+        n = import_log(a.data, sys.stdin.read() if a.file == "-" else read(a.file), a.to_today)
+        print(json.dumps({"imported": n, **stats(a.data)}, ensure_ascii=False, indent=1))
     elif a.cmd == "dashboard":
+        s = stats(a.data)
+        if not (s and s["unlocked"]):
+            print(f"还没解锁：记满 {UNLOCK_DAYS} 天才有这页，还差 {s['days_to_unlock'] if s else UNLOCK_DAYS} 天")
+            return
         out = build_dashboard(a.data)
         print(out.resolve())
         if a.open:
             webbrowser.open(out.resolve().as_uri())
     elif a.cmd == "remind":
         print(remind(a.data, a.force))
-    elif a.cmd == "reminder":
-        print(reminder(a.action, a.time, a.data))
     else:
-        selftest()
+        print(reminder(a.action, a.time, a.data))
 
 
 if __name__ == "__main__":
