@@ -272,6 +272,7 @@ def build_dashboard(data, as_of=None):
             "protein": plan.get("每天蛋白 g", ""),
             "eta": plan.get("预计到达", ""),
             "week": plan["_week"],
+            "split": plan.get("训练分化", ""),
         })
     blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     html = read(HERE / "templates" / "dashboard.html").replace("/*__DATA__*/null", blob)
@@ -389,6 +390,7 @@ def selftest():
     assert s["weeks"][1]["waist"] == 92.6 and s["weeks"][1]["waist_change"] == -0.6, s["weeks"]
     assert s["weeks"][2]["waist"] == 93.2 and s["change_from_start"] == -1.35, s
     assert stats(example, date(2026, 10, 22))["change7"] is None, "前两周上一窗口不完整，不比"
+    assert [k for k, _ in load_plan(example)["_week"]] == ["力量训练", "每天步数", "这周重点"], "看板不列饮食建议"
 
     with tempfile.TemporaryDirectory() as tmp:
         assert "不提醒" in remind(tmp), "没有计划时不该提醒"

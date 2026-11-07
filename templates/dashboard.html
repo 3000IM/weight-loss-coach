@@ -5,163 +5,234 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>减肥看板</title>
 <style>
+/* Impact 只有一个字重，声明成 900 防止浏览器再给它描粗。手机上没有 Impact：iOS 落到 Helvetica Neue 窄黑体，安卓落到 Roboto 窄粗体。sans-serif-condensed 要排在安卓认识的其他字体名前面 */
+@font-face { font-family: Big; font-weight: 900; src: local("Impact"); }
 :root {
-  color-scheme: dark;
-  --bg: #0e0e10; --card: #17171a; --hair: #2b2b30; --grid: #242428;
-  --ink: #f5f5f6; --ink2: #b0b0b8; --ink3: #85858d;
-  --s-avg: #ffffff; --s-day: #8a8a92; --s-plan: #a0a0a8; --s-target: #55555c;
+  color-scheme: light;
+  --paper: #f6f0e3; --ink: #111111; --ink2: #4a453c; --ink3: #6d675b; --rule: #d9d1bf;
+  --red: #ff3a12; --sun: #ffe11a; --cream: #fff8ea;
+  --big: Big, "HelveticaNeue-CondensedBlack", "sans-serif-condensed", "Arial Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { margin: 0; background: var(--bg); color: var(--ink); }
-body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; -webkit-font-smoothing: antialiased; }
-.page { display: grid; gap: 12px; padding: 16px 14px; grid-template-columns: minmax(0, 1fr); }
-.top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; color: var(--ink2); font-size: 14px; }
-#asof { white-space: nowrap; padding-top: 2px; }
-.brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.brand b { color: var(--ink); font-size: 17px; font-weight: 600; }
-.chip { border: 1px solid var(--hair); border-radius: 999px; padding: 2px 10px; font-size: 13px; color: var(--ink2); }
-.card { background: var(--card); border-radius: 18px; padding: 14px 16px; min-width: 0; }
-.summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.hero { grid-column: 1 / -1; }
-.label { color: var(--ink2); font-size: 14px; }
-.hero-num { font-size: 68px; line-height: 1.08; font-weight: 700; letter-spacing: -0.02em; margin-top: 2px; }
-.hero-num small { font-size: 26px; font-weight: 500; margin-left: 6px; letter-spacing: 0; color: var(--ink2); }
-.sub { color: var(--ink3); font-size: 13px; margin-top: 4px; }
-.value { font-size: 30px; line-height: 1.15; font-weight: 650; margin-top: 3px; letter-spacing: -0.01em; }
-.value small { font-size: 15px; font-weight: 500; margin-left: 4px; color: var(--ink2); letter-spacing: 0; }
-.progress { display: grid; gap: 7px; }
-.bar { height: 8px; border-radius: 999px; background: var(--hair); overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: 999px; background: var(--ink); width: 0; }
-.bar-labels { display: flex; justify-content: space-between; color: var(--ink2); font-size: 13px; }
-.bar-labels b { color: var(--ink); font-weight: 600; }
-figure { margin: 0; display: flex; flex-direction: column; }
-figcaption { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.legend { display: flex; gap: 14px; color: var(--ink2); font-size: 12px; font-weight: 400; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.plot { position: relative; height: 290px; touch-action: pan-y; }
-.waist .plot { height: 180px; }
-svg { display: block; outline: none; }
-svg:focus-visible { outline: 1px solid var(--ink3); outline-offset: 2px; border-radius: 4px; }
-.tick { fill: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; }
-.tip { position: absolute; top: 4px; left: 0; pointer-events: none; background: #0a0a0c; border: 1px solid var(--hair); border-radius: 10px; padding: 8px 11px; font-size: 13px; color: var(--ink2); white-space: nowrap; display: none; z-index: 2; max-width: 240px; }
-.tip b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; margin-right: 6px; }
-.tip div { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
-.tip .date { margin: 0 0 2px; color: var(--ink3); }
-.tip .note { white-space: normal; color: var(--ink2); }
-.key { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--s-avg); }
-.key.dash { border-top: 2px dashed var(--s-plan); }
-.key.dot { width: 8px; height: 8px; border: 0; border-radius: 50%; background: var(--s-day); }
-.empty-plot { color: var(--ink3); font-size: 14px; display: flex; align-items: center; justify-content: center; height: 100%; }
-.plan h2 { margin: 0; font-size: 15px; font-weight: 600; }
-.eat { display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; margin: 6px 0 8px; font-size: 26px; font-weight: 650; }
-.eat small { font-size: 14px; font-weight: 500; color: var(--ink2); margin-left: 3px; }
-.plan dl { margin: 0; display: grid; gap: 8px; }
-.plan dt { color: var(--ink3); font-size: 13px; }
-.plan dd { margin: 1px 0 0; font-size: 15px; line-height: 1.45; }
-.charts, .side { display: grid; gap: 12px; min-width: 0; }
-.foot { color: var(--ink3); font-size: 12px; text-align: center; }
-.foot a { display: none; color: var(--ink2); margin-left: 8px; }
-details { margin: 0 14px 18px; }
-summary { cursor: pointer; color: var(--ink2); font-size: 14px; }
-.scroll { overflow-x: auto; margin-top: 10px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; font-variant-numeric: tabular-nums; }
-td:last-child { white-space: normal; min-width: 120px; }
-th { color: var(--ink3); font-weight: 500; }
-.nodata { min-height: 70vh; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--ink2); font-size: 18px; line-height: 1.7; padding: 24px; }
-.anim-draw { stroke-dasharray: 1; animation: draw 1.3s ease-out both; }
-.anim-fade { animation: fade .7s ease-out both; }
-@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
-@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .anim-draw, .anim-fade { animation: none; } }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+html { scrollbar-width: none; }
 
-/* 1555×972 的内容窗口：一屏放下，字号按手机看视频时还能读清来定 */
+.page { display: grid; grid-template-columns: minmax(0, 1fr); }
+.cjk { font-family: var(--sans); font-weight: 900; font-size: .78em; margin-right: .12em; }
+
+/* 左边红色大版面 */
+.hero { position: relative; background: var(--red); color: var(--ink); padding: 18px 18px 22px; overflow: hidden; display: flex; flex-direction: column; gap: 10px; animation: wipeDown .55s cubic-bezier(.8,0,.1,1) both; }
+@keyframes wipeDown { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+.kicker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 800; font-size: 16px; padding-right: 120px; }
+.kicker b { background: var(--ink); color: var(--cream); padding: 2px 10px; font-weight: 800; }
+.chip { background: var(--cream); padding: 2px 8px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+button { font: 700 13px var(--sans); background: var(--ink); color: var(--cream); border: 0; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.still { font-size: 44px; font-weight: 900; line-height: 1; margin-top: 8px; animation: slam .45s cubic-bezier(.2,1.4,.4,1) .35s both; }
+.giant { display: flex; align-items: flex-end; font-family: var(--big); font-weight: 900; color: var(--cream); line-height: .95; animation: punch 5s ease-out 4s infinite; transform-origin: left bottom; }
+@keyframes punch { 0%, 88%, 100% { transform: scale(1); } 92% { transform: scale(1.07) rotate(-1.2deg); } 96% { transform: scale(.98) rotate(.5deg); } }
+#togo { font-size: var(--size, 196px); display: inline-flex; filter: drop-shadow(7px 7px 0 var(--ink)); }
+.giant em { font-style: normal; font-size: 56px; margin: 0 0 16px 12px; color: var(--ink); }
+.col { display: inline-block; height: 1em; overflow: hidden; line-height: 1; }
+.reel { display: block; animation: roll 1.6s cubic-bezier(.15,.8,.2,1) both; animation-delay: var(--d); }
+.reel span { display: block; height: 1em; text-align: center; }
+@keyframes roll { from { transform: translateY(0); } to { transform: translateY(calc(var(--n) * -1em)); } }
+.reel.done, .reel { transform: translateY(calc(var(--n) * -1em)); }
+@keyframes slam { from { transform: scale(2.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* 进度尺 */
+.ruler { display: grid; gap: 6px; font-weight: 800; font-size: 16px; }
+.track { position: relative; height: 34px; background: repeating-linear-gradient(90deg, var(--ink) 0 2px, transparent 2px 20px); border-bottom: 5px solid var(--ink); }
+.fill { position: absolute; left: 0; top: 6px; bottom: 0; width: var(--pct); background: repeating-linear-gradient(-45deg, var(--cream) 0 12px, var(--sun) 12px 24px); background-size: 200% 100%; border: 3px solid var(--ink); border-bottom: 0; animation: fill 1.6s cubic-bezier(.2,1,.3,1) .9s both, barber 1.2s linear 2.6s infinite; }
+@keyframes fill { from { width: 0; } }
+@keyframes barber { to { background-position: -34px 0; } }
+.ends { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+/* 旋转徽章 */
+.badge { position: absolute; right: 12px; top: 10px; width: 120px; height: 120px; animation: stamp .5s cubic-bezier(.2,1.6,.4,1) 1.5s both; }
+.badge svg { position: absolute; inset: 0; width: 100%; height: 100%; animation: spin 7s linear infinite; }
+.badge svg text { font: 800 17px var(--sans); fill: var(--cream); letter-spacing: 1px; }
+.badge::before { content: ""; position: absolute; inset: 0; background: var(--ink); border-radius: 50%; }
+.badge b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 900 38px var(--big); color: var(--sun); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes stamp { from { transform: scale(3) rotate(-30deg); opacity: 0; } }
+
+/* 胶带跑马灯 */
+.tape { margin: 8px -40px; transform: rotate(-2.4deg); background: var(--sun); border-block: 4px solid var(--ink); overflow: hidden; white-space: nowrap; font-weight: 900; font-size: 20px; padding: 6px 0; animation: tapeIn .5s cubic-bezier(.2,1,.3,1) 1.2s both; }
+.tape > div { display: inline-block; animation: tick 16s linear infinite; }
+@keyframes tick { to { transform: translateX(-50%); } }
+@keyframes tapeIn { from { transform: rotate(-2.4deg) translateX(-110%); } }
+
+/* 每天的三个数字 */
+.daily { display: grid; gap: 2px; background: var(--ink); color: var(--cream); padding: 12px 14px; animation: wipeRight .5s cubic-bezier(.8,0,.1,1) 1.4s both; margin-top: auto; }
+.daily .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.daily .row > span { font-size: 17px; font-weight: 700; white-space: nowrap; }
+.daily b { font: 900 50px/1.08 var(--big); color: var(--sun); white-space: nowrap; display: inline-flex; align-items: baseline; }
+.daily b small { font: 900 22px var(--big); color: var(--cream); margin-left: 7px; }
+@keyframes wipeRight { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+
+/* 右边 */
+.right { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
+.block { padding: 14px 16px; border-bottom: 5px solid var(--ink); min-width: 0; min-height: 0; animation: wipeRight .6s cubic-bezier(.8,0,.1,1) both; animation-delay: var(--t, .4s); }
+figure { margin: 0; display: flex; flex-direction: column; }
+h2 { margin: 0 0 6px; display: flex; align-items: baseline; justify-content: flex-start; gap: 10px; flex-wrap: wrap; font-size: 32px; font-weight: 900; line-height: 1.1; }
+h2 small { font-size: 14px; font-weight: 700; }
+.legend { display: flex; gap: 14px; font-size: 13px; font-weight: 700; color: var(--ink2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { display: inline-block; width: 18px; height: 0; border-top: 5px solid var(--ink); }
+.key.dash { border-top: 3px dashed var(--ink3); }
+.key.dot { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--red); }
+.plot { position: relative; height: 270px; touch-action: pan-y; }
+.black { background: var(--ink); color: var(--cream); }
+.black .plot { height: 180px; }
+svg.chart { display: block; outline: none; overflow: visible; }
+.tl { font: 700 12px var(--sans); fill: var(--ink3); }
+.black .tl { fill: #cfc7b3; }
+.draw { stroke-dasharray: 1; animation: draw 1.9s cubic-bezier(.5,0,.3,1) 1s both; }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.pop { animation: pop .28s cubic-bezier(.2,2.4,.4,1) both; transform-box: fill-box; transform-origin: center; }
+@keyframes pop { from { transform: scale(0); } }
+.ripple { fill: none; transform-box: fill-box; transform-origin: center; animation: ripple 1.4s ease-out infinite; }
+@keyframes ripple { from { transform: scale(.4); opacity: 1; } to { transform: scale(2.6); opacity: 0; } }
+.tip { position: absolute; top: 2px; left: 0; pointer-events: none; background: var(--ink); color: var(--cream); border: 2px solid var(--sun); padding: 7px 10px; font-size: 13px; white-space: nowrap; display: none; z-index: 3; max-width: 260px; }
+.tip b { font-weight: 800; margin-right: 6px; }
+.tip div { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.tip .date { margin: 0 0 2px; color: #cfc7b3; }
+.tip .note { white-space: normal; }
+.tip .key { border-top-color: var(--sun); }
+.tip .key.dash { border-top-color: #cfc7b3; }
+.none { display: flex; height: 100%; align-items: center; justify-content: center; font-weight: 700; color: var(--ink3); }
+.stats { display: grid; grid-template-columns: 1fr 1fr; }
+.stat { padding: 10px 14px; border-right: 5px solid var(--ink); border-bottom: 5px solid var(--ink); animation: stamp .4s cubic-bezier(.2,1.4,.4,1) both; animation-delay: var(--t); min-width: 0; }
+.stat:nth-child(2n) { border-right: 0; }
+.stat:nth-last-child(-n+2) { border-bottom: 0; }
+.stat .k { font-size: 15px; font-weight: 800; }
+.stat .v { font: 900 46px/1.1 var(--big); white-space: nowrap; display: inline-flex; align-items: baseline; }
+.stat .v small { font-size: 20px; margin-left: 5px; }
+.stat .s { font-size: 13px; color: var(--ink2); font-weight: 700; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr); }
+.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0; border: 4px solid var(--ink); }
+.day { padding: 7px 0; text-align: center; font-weight: 900; font-size: 17px; border-right: 4px solid var(--ink); animation: dayIn .35s cubic-bezier(.2,1.6,.4,1) both; animation-delay: calc(var(--n) * 90ms + 1.5s); min-width: 0; }
+.day:last-child { border-right: 0; }
+.day i { display: block; font-style: normal; font-size: 14px; font-weight: 800; min-height: 20px; white-space: nowrap; }
+.day.on { background: var(--red); color: var(--cream); animation: dayIn .35s cubic-bezier(.2,1.6,.4,1) both, nudge 1.6s ease-in-out infinite; animation-delay: calc(var(--n) * 90ms + 1.5s), 3s; }
+.day.today { box-shadow: inset 0 0 0 4px var(--sun); }
+@keyframes dayIn { from { transform: translateY(-120%); opacity: 0; } }
+@keyframes nudge { 50% { transform: translateY(-5px); } }
+.raw-plan { font-size: 22px; font-weight: 800; }
+.focus { background: var(--sun); position: relative; }
+.focus p { margin: 0; font-size: 25px; font-weight: 900; line-height: 1.32; animation: slamSmall .5s cubic-bezier(.2,1.4,.4,1) 2.2s both, wobble 3.4s ease-in-out 3s infinite; transform-origin: left center; }
+@keyframes slamSmall { from { transform: scale(1.8); opacity: 0; } }
+@keyframes wobble { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-.8deg) scale(1.012); } }
+.foot { font-size: 12px; font-weight: 600; color: var(--ink2); padding: 6px 16px; text-align: center; }
+.foot a { color: var(--ink); margin-left: 8px; }
+details { padding: 8px 16px 20px; }
+summary { cursor: pointer; font-size: 14px; font-weight: 700; }
+.scroll { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 12px 5px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td:last-child { white-space: normal; min-width: 120px; }
+.nodata { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 26px; font-weight: 900; line-height: 1.5; padding: 24px; background: var(--red); }
+
 @media (min-width: 1000px) {
-  .page { padding: 20px 26px 12px; gap: 14px; height: 100vh; min-height: 720px; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
-  html { scrollbar-width: none; }
-  .top { font-size: 17px; align-items: center; }
-  #asof { padding-top: 0; }
-  .brand b { font-size: 21px; }
-  .chip { font-size: 15px; padding: 2px 12px; }
-  .summary { grid-template-columns: minmax(330px, 1.35fr) repeat(4, minmax(0, 1fr)); gap: 14px; }
-  .hero { grid-column: auto; }
-  .card { padding: 16px 20px; }
-  .label { font-size: 17px; }
-  .hero-num { font-size: 84px; }
-  .hero-num small { font-size: 30px; }
-  .value { font-size: 44px; margin-top: 8px; }
-  .value small { font-size: 20px; }
-  .sub { font-size: 16px; margin-top: 6px; }
-  .bar { height: 10px; }
-  .bar-labels { font-size: 16px; }
-  .charts { grid-template-columns: minmax(0, 1fr) 420px; gap: 14px; min-height: 0; }
-  .side { grid-template-rows: minmax(0, 0.8fr) minmax(0, 1fr); gap: 14px; min-height: 0; }
-  figure.card { min-height: 0; }
-  figcaption { font-size: 19px; }
-  .legend { font-size: 15px; gap: 18px; }
-  .plot, .waist .plot { flex: 1; height: auto; min-height: 0; }
-  .tick { font-size: 15px; }
-  .tip { font-size: 16px; padding: 10px 14px; max-width: 320px; }
-  .plan { overflow: auto; }
-  .plan h2 { font-size: 19px; }
-  .eat { font-size: 34px; margin: 4px 0 8px; }
-  .eat small { font-size: 18px; }
-  .plan dt { font-size: 15px; }
-  .plan dd { font-size: 18px; line-height: 1.4; }
-  .plan dl { gap: 7px; }
-  .foot { font-size: 14px; }
-  .foot a { display: inline; }
-  details { margin: 16px 26px 24px; }
-  summary, table { font-size: 16px; }
+  .page { grid-template-columns: 580px minmax(0, 1fr); height: 100vh; min-height: 930px; }
+  .hero { padding: 24px 28px 26px; gap: 12px; }
+  .kicker { font-size: 19px; padding-right: 150px; }
+  .chip { font-size: 15px; }
+  .badge { width: 158px; height: 158px; right: 20px; top: 18px; }
+  .badge b { font-size: 52px; }
+  .still { font-size: 70px; margin-top: 26px; }
+  #togo { font-size: var(--size, 300px); }
+  #togo { filter: drop-shadow(10px 10px 0 var(--ink)); }
+  .giant em { font-size: 88px; margin-bottom: 26px; }
+  .ruler { font-size: 20px; }
+  .track { height: 44px; }
+  .tape { font-size: 26px; padding: 8px 0; margin: 12px -60px; }
+  .daily { padding: 14px 20px; }
+  .daily .row > span { font-size: 20px; }
+  .daily b { font-size: 56px; }
+  .daily b small { font-size: 26px; }
+  .right { grid-template-rows: minmax(0, 1.55fr) minmax(0, 1fr) auto auto; height: 100vh; min-height: 930px; }
+  .right > .block, .right > .pair { min-height: 0; }
+  .plot, .black .plot { flex: 1; height: auto; min-height: 0; }
+  h2 { font-size: 40px; }
+  h2 small { font-size: 16px; }
+  .legend { font-size: 16px; }
+  .tl { font-size: 15px; }
+  .pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pair .black { border-bottom: 5px solid var(--ink); }
+  .pair .stats { border-bottom: 5px solid var(--ink); }
+  .stat { padding: 8px 16px; display: flex; flex-direction: column; justify-content: center; }
+  .stat .k { font-size: 18px; }
+  .stat .v { font-size: 60px; }
+  .stat .v small { font-size: 26px; }
+  .stat .s { font-size: 15px; }
+  .lower { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+  .lower .block { border-bottom: 0; }
+  .lower .block:first-child { border-right: 5px solid var(--ink); }
+  .day { font-size: 20px; padding: 12px 0; }
+  .day i { font-size: 16px; }
+  .focus p { font-size: 28px; }
+  .foot { padding: 4px 16px; border-top: 5px solid var(--ink); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; }
 }
 </style>
 </head>
 <body>
 <div id="nodata" class="nodata" hidden>还没有数据。<br>对你的 Agent 说「开始减肥计划」，走完问答再回来看。</div>
 <main id="app" class="page" hidden>
-  <header class="top">
-    <div class="brand"><b>减肥看板</b><span id="weekno"></span><span id="chip" class="chip" hidden>示例数据，全部是编的</span></div>
-    <div id="asof"></div>
-  </header>
-
-  <section class="summary">
-    <div class="card hero">
-      <div class="label">离目标还差</div>
-      <div class="hero-num"><span id="togo"></span><small>kg</small></div>
+  <aside class="hero">
+    <div class="kicker"><b id="weekno"></b><span>减肥看板</span><span id="chip" class="chip" hidden>示例数据，全部是编的</span><button id="replay" type="button">再放一遍</button></div>
+    <div class="badge" id="badge">
+      <svg viewBox="0 0 160 160" aria-hidden="true"><defs><path id="around" d="M80 80m-60 0a60 60 0 1 1 120 0a60 60 0 1 1 -120 0"/></defs><text><textPath href="#around" id="aroundText"></textPath></text></svg>
+      <b id="lost"></b>
     </div>
-    <div class="card"><div class="label">7 天平均</div><div class="value" id="t1"></div><div class="sub" id="t1s"></div></div>
-    <div class="card"><div class="label">本周变化</div><div class="value" id="t2"></div><div class="sub" id="t2s"></div></div>
-    <div class="card"><div class="label">腰围</div><div class="value" id="t3"></div><div class="sub" id="t3s"></div></div>
-    <div class="card"><div class="label">和计划线比</div><div class="value" id="t4"></div><div class="sub" id="t4s"></div></div>
-  </section>
+    <div class="still">离目标还差</div>
+    <div class="giant"><span id="togo"></span><em>KG</em></div>
+    <div class="ruler">
+      <div class="track"><div class="fill" id="fill"></div></div>
+      <div class="ends"><span id="from"></span><span id="pct"></span><span id="to"></span></div>
+    </div>
+    <div class="tape"><div id="tape"></div></div>
+    <div class="daily">
+      <div class="row"><span>每天热量</span><b id="kcal"></b></div>
+      <div class="row"><span>每天蛋白</span><b id="protein"></b></div>
+      <div class="row"><span>每天步数</span><b id="steps"></b></div>
+    </div>
+  </aside>
 
-  <section class="progress" aria-label="进度">
-    <div class="bar"><i id="fill"></i></div>
-    <div class="bar-labels"><span id="b1"></span><b id="b2"></b><span id="b3"></span></div>
-  </section>
-
-  <section class="charts">
-    <figure class="card">
-      <figcaption>体重 kg
-        <span class="legend"><span><i class="key dot"></i>每天</span><span><i class="key"></i>7 天平均</span><span><i class="key dash"></i>计划线</span></span>
-      </figcaption>
+  <div class="right">
+    <figure class="block" style="--t:.45s">
+      <h2>体重 <small>KG</small><span class="legend" style="margin-left:auto"><span><i class="key dot"></i>每天</span><span><i class="key"></i>7 天平均</span><span><i class="key dash"></i>计划线</span></span></h2>
       <div class="plot" id="weight"></div>
     </figure>
-    <div class="side">
-      <figure class="card waist">
-        <figcaption>腰围 cm</figcaption>
+    <div class="pair">
+      <figure class="block black" style="--t:.7s">
+        <h2>腰围 <small>CM</small></h2>
         <div class="plot" id="waist"></div>
       </figure>
-      <section class="card plan">
-        <h2>本周计划</h2>
-        <div class="eat"><span id="kcal"></span><span id="protein"></span></div>
-        <dl id="week"></dl>
+      <section class="stats">
+        <div class="stat" style="--t:1.1s"><div class="k">7 天平均</div><div class="v" id="t1"></div><div class="s" id="t1s"></div></div>
+        <div class="stat" style="--t:1.25s"><div class="k">本周变化</div><div class="v" id="t2"></div><div class="s" id="t2s"></div></div>
+        <div class="stat" style="--t:1.4s"><div class="k">腰围</div><div class="v" id="t3"></div><div class="s" id="t3s"></div></div>
+        <div class="stat" style="--t:1.55s"><div class="k">和计划线比</div><div class="v" id="t4"></div><div class="s" id="t4s"></div></div>
       </section>
     </div>
-  </section>
-
-  <footer class="foot">AI 判断不准，不是医疗建议。数据只存在你自己的电脑上。<a id="openraw" href="#raw">看每天的原始数据</a></footer>
+    <div class="lower">
+      <section class="block" style="--t:1s">
+        <h2 style="font-size:26px">力量训练 <small id="split"></small></h2>
+        <div id="train"></div>
+      </section>
+      <section class="block focus" style="--t:1.15s">
+        <h2 style="font-size:26px">这周重点</h2>
+        <p id="focus"></p>
+      </section>
+    </div>
+    <footer class="foot">AI 判断不准，不是医疗建议。数据只存在你自己的电脑上。<a id="openraw" href="#raw">看每天的原始数据</a></footer>
+  </div>
 </main>
 <details id="raw" hidden>
   <summary>看每天的原始数据</summary>
@@ -171,193 +242,202 @@ th { color: var(--ink3); font-weight: 500; }
 <script>
 const DATA = /*__DATA__*/null;
 const $ = (id) => document.getElementById(id);
+const STILL = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const dayNo = (s) => Date.parse(s + "T00:00:00Z") / 864e5;
-const signed = (x, n = 1) => x === null || x === undefined ? "" : (x < 0 ? "−" : x > 0 ? "+" : "") + Math.abs(x).toFixed(n);
-const md = (s) => s.slice(5).replace(/^0/, "").replace("-0", "/").replace("-", "/");
+const fmt = (x, n = 1) => x === null || x === undefined ? "—" : Number(x).toFixed(n);
+const signed = (x, n = 1) => x === null || x === undefined ? "—" : (x < 0 ? "−" : x > 0 ? "+" : "") + Math.abs(x).toFixed(n);
+const md = (s) => +s.slice(5, 7) + "/" + +s.slice(8, 10);
 const WEEK = "日一二三四五六";
-const setValue = (el, value, unit) => {
-  el.textContent = value;
-  if (unit) { const small = document.createElement("small"); small.textContent = unit; el.appendChild(small); }
-};
+
+// 数字：老虎机，每一位是一条竖着滚的数字带，停在目标数字上
+function slot(el, text, unit, delay = 0) {
+  el.replaceChildren();
+  el.setAttribute("aria-label", text + (unit || ""));
+  [...text].forEach((c, i) => {
+    if (!/\d/.test(c) || STILL) { const s = document.createElement("span"); s.textContent = c; if (/[\u4e00-\u9fff]/.test(c)) s.className = "cjk"; el.append(s); return; }
+    const col = document.createElement("span"), reel = document.createElement("span"), turns = 12 + i * 3;
+    col.className = "col"; reel.className = "reel";
+    for (let n = 0; n <= turns; n++) { const d = document.createElement("span"); d.textContent = (+c + n - turns + 100) % 10; reel.append(d); }
+    reel.style.setProperty("--n", turns); reel.style.setProperty("--d", `${delay + i * 130}ms`);
+    col.append(reel); el.append(col);
+  });
+  if (unit) { const s = document.createElement("small"); s.textContent = unit; el.append(s); }
+}
 
 function niceStep(range, maxTicks) {
   for (const s of [0.5, 1, 2, 5, 10, 20, 50]) if (range / s <= maxTicks) return s;
   return 100;
 }
 
-// 一张折线图。series 只放数字和日期，用户写的备注只经 textContent 进页面。
-function lineChart(host, cfg, animate) {
+// 备注只经 textContent 进页面，SVG 字符串里只有数字和日期
+function chart(host, cfg, animate) {
   const W = host.clientWidth, H = host.clientHeight, big = innerWidth >= 1000;
-  const m = { l: big ? 48 : 38, r: big ? 66 : 48, t: 10, b: big ? 28 : 24 };
+  const m = { l: big ? 46 : 36, r: big ? 70 : 54, t: 12, b: big ? 26 : 22 };
   const pts = cfg.points;
   if (pts.length < 2) {
-    const note = document.createElement("div");
-    note.className = "empty-plot"; note.textContent = cfg.emptyText;
-    host.replaceChildren(note);
-    return;
+    const n = document.createElement("div"); n.className = "none"; n.textContent = cfg.emptyText;
+    return host.replaceChildren(n);
   }
-  const x0 = dayNo(pts[0].d), x1 = dayNo(pts[pts.length - 1].d);
-  const X = (d) => m.l + (dayNo(d) - x0) / Math.max(1, x1 - x0) * (W - m.l - m.r);
+  const x0 = dayNo(pts[0].d), x1 = dayNo(pts[pts.length - 1].d), span = x1 - x0;
+  const X = (d) => m.l + (dayNo(d) - x0) / Math.max(1, span) * (W - m.l - m.r);
   const all = pts.flatMap((p) => [p.y, p.a, p.p]).filter((v) => v !== null && v !== undefined);
-  const spread = Math.max(...all) - Math.min(...all);
-  const targetNear = cfg.target !== undefined && cfg.target >= Math.min(...all) - Math.max(spread, 1) * 0.6;
-  if (targetNear) all.push(cfg.target);
-  const step = Math.max(niceStep(Math.max(...all) - Math.min(...all), big ? 7 : 5), cfg.minStep || 0);
+  const spreadAll = Math.max(...all) - Math.min(...all);
+  const near = cfg.target !== undefined && cfg.target >= Math.min(...all) - Math.max(spreadAll, 1) * 0.6;
+  if (near) all.push(cfg.target);
+  const step = Math.max(niceStep(Math.max(...all) - Math.min(...all), big ? 6 : 4), cfg.minStep || 0);
   const lo = Math.floor((Math.min(...all) - step * 0.25) / step) * step;
   const hi = Math.ceil((Math.max(...all) + step * 0.25) / step) * step;
   const Y = (v) => m.t + (hi - v) / (hi - lo) * (H - m.t - m.b);
+  const path = (key) => pts.filter((p) => p[key] !== null && p[key] !== undefined).map((p, i) => `${i ? "L" : "M"}${X(p.d).toFixed(1)} ${Y(p[key]).toFixed(1)}`).join("");
+  const line = cfg.lineKey, withLine = pts.filter((p) => p[line] !== null && p[line] !== undefined);
+  const dur = 1900, start = 1000, delayAt = (d) => start + (dayNo(d) - x0) / Math.max(1, span) * dur;
 
-  let g = "";
+  let g = `<defs><clipPath id="${host.id}-cp"><rect x="0" y="0" width="${animate ? 0 : W}" height="${H}">${animate ? `<animate attributeName="width" from="0" to="${W}" begin="${start}ms" dur="${dur}ms" fill="freeze"/>` : ""}</rect></clipPath></defs>`;
   for (let v = lo; v <= hi + 1e-9; v += step) {
-    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--grid)"/>`;
-    g += `<text class="tick" x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${cfg.gridColor}"/>`;
+    g += `<text class="tl" x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
   }
-  const span = x1 - x0, minGap = 52;
   let every = 7;
-  while (every / Math.max(1, span) * (W - m.l - m.r) < minGap && every < span) every *= 2;
+  while (every / Math.max(1, span) * (W - m.l - m.r) < 52 && every < span) every *= 2;
   for (let n = 0; n <= span; n += every) {
     const d = new Date((x0 + n) * 864e5).toISOString().slice(0, 10);
-    g += `<text class="tick" x="${X(d)}" y="${H - 6}" text-anchor="middle">${md(d)}</text>`;
+    g += `<text class="tl" x="${X(d)}" y="${H - 5}" text-anchor="middle">${md(d)}</text>`;
   }
-  if (cfg.target !== undefined && !targetNear) {
-    g += `<text class="tick" style="fill:var(--ink2)" x="${m.l + 8}" y="${H - m.b - 8}">↓ 目标 ${cfg.target.toFixed(1)}</text>`;
+  if (cfg.target !== undefined) {
+    g += near
+      ? `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}" stroke="var(--ink)" stroke-width="2"/><text class="tl" x="${m.l + 8}" y="${Y(cfg.target) - 6}">目标 ${cfg.target.toFixed(1)}</text>`
+      : `<text class="tl" x="${m.l + 8}" y="${H - m.b - 8}">↓ 目标 ${cfg.target.toFixed(1)}</text>`;
   }
-  if (targetNear) {
-    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}" stroke="var(--s-target)" stroke-width="1.5"/>`;
-    g += `<text class="tick" style="fill:var(--ink2)" x="${m.l + 8}" y="${Y(cfg.target) - 7}">目标 ${cfg.target.toFixed(1)}</text>`;
-  }
-
-  const path = (key) => pts.filter((p) => p[key] !== null && p[key] !== undefined).map((p, i) => `${i ? "L" : "M"}${X(p.d).toFixed(1)} ${Y(p[key]).toFixed(1)}`).join("");
-  const draw = animate ? ' class="anim-draw" pathLength="1"' : "";
-  const fade = animate ? ' class="anim-fade"' : "";
-  const lineKey = cfg.lineKey;
-  const withLine = pts.filter((p) => p[lineKey] !== null && p[lineKey] !== undefined);
-
-  if (cfg.area && withLine.length > 1) {
-    const base = Y(lo), id = "wash" + host.id;
-    g += `<defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".09"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>`;
-    g += `<path${fade} d="${path(lineKey)}L${X(withLine[withLine.length - 1].d)} ${base}L${X(withLine[0].d)} ${base}Z" fill="url(#${id})"/>`;
-  }
-  if (cfg.plan) g += `<path${fade} d="${path("p")}" fill="none" stroke="var(--s-plan)" stroke-width="${big ? 2 : 1.5}" stroke-dasharray="6 6"/>`;
-  if (cfg.dots) {
-    const r = (W - m.l - m.r) / Math.max(1, span) < 9 ? 2.5 : big ? 5 : 4;
-    pts.forEach((p) => {
-      if (p.y !== null && p.y !== undefined) g += `<circle${fade} cx="${X(p.d)}" cy="${Y(p.y)}" r="${r}" fill="${cfg.dotFill || "var(--s-day)"}" stroke="var(--card)" stroke-width="2"/>`;
-    });
-  }
-  g += `<path${draw} d="${path(lineKey)}" fill="none" stroke="var(--s-avg)" stroke-width="${big ? 3 : 2}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  if (cfg.plan) g += `<path clip-path="url(#${host.id}-cp)" d="${path("p")}" fill="none" stroke="var(--ink3)" stroke-width="3" stroke-dasharray="9 8"/>`;
+  if (cfg.dots) pts.forEach((p) => {
+    if (p.y !== null && p.y !== undefined) g += `<circle ${animate ? `class="pop" style="animation-delay:${delayAt(p.d)}ms"` : ""} cx="${X(p.d)}" cy="${Y(p.y)}" r="${big ? 6 : 4.5}" fill="${cfg.dotColor}" stroke="${cfg.surface}" stroke-width="2"/>`;
+  });
+  g += `<path ${animate ? 'class="draw" pathLength="1"' : ""} d="${path(line)}" fill="none" stroke="${cfg.color}" stroke-width="${big ? 6 : 4.5}" stroke-linejoin="round" stroke-linecap="round"/>`;
   const end = withLine[withLine.length - 1];
   if (end) {
-    g += `<circle${fade} cx="${X(end.d)}" cy="${Y(end[lineKey])}" r="5.5" fill="var(--s-avg)" stroke="var(--card)" stroke-width="2"/>`;
-    g += `<text${fade} x="${X(end.d) + 11}" y="${Y(end[lineKey]) + 6}" fill="var(--ink)" font-weight="700" font-size="${big ? 19 : 14}">${end[lineKey].toFixed(1)}</text>`;
+    const ex = X(end.d), ey = Y(end[line]), label = end[line].toFixed(1), bw = big ? 62 : 46, bh = big ? 30 : 24;
+    if (!STILL) g += `<circle class="ripple" cx="${ex}" cy="${ey}" r="10" stroke="${cfg.dotColor}" stroke-width="3"/>`;
+    g += `<circle cx="${ex}" cy="${ey}" r="8" fill="${cfg.color}" stroke="${cfg.surface}" stroke-width="2"/>`;
+    g += `<rect x="${ex + 11}" y="${ey - bh / 2}" width="${bw}" height="${bh}" fill="${cfg.color}"/><text x="${ex + 11 + bw / 2}" y="${ey + (big ? 7 : 6)}" text-anchor="middle" fill="${cfg.surface}" font-family="var(--big)" font-weight="900" font-size="${big ? 22 : 17}">${label}</text>`;
   }
-  g += `<line id="${host.id}-cross" y1="${m.t}" y2="${H - m.b}" stroke="var(--ink3)" visibility="hidden"/>`;
-  g += `<circle id="${host.id}-mark" r="6" fill="var(--s-avg)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>`;
+  g += `<line class="cross" y1="${m.t}" y2="${H - m.b}" stroke="${cfg.dotColor}" stroke-width="2" visibility="hidden"/>`;
+  g += `<circle class="mark" r="7" fill="${cfg.color}" stroke="${cfg.surface}" stroke-width="2" visibility="hidden"/>`;
 
-  host.innerHTML = `<svg width="${W}" height="${H}" tabindex="0" role="img" aria-label="${cfg.aria}">${g}</svg><div class="tip"></div>`;
-  const svg = host.querySelector("svg"), tip = host.querySelector(".tip");
-  const cross = svg.querySelector(`[id="${host.id}-cross"]`), mark = svg.querySelector(`[id="${host.id}-mark"]`);
-  let current = pts.length - 1;
-
-  function row(text, name, keyClass) {
-    const div = document.createElement("div"), b = document.createElement("b"), key = document.createElement("i"), label = document.createElement("span");
-    b.textContent = text; key.className = "key " + keyClass; label.textContent = name;
-    div.append(key, b, label);
-    return div;
-  }
-  function show(i) {
-    current = i;
-    const p = pts[i], px = X(p.d);
+  host.innerHTML = `<svg class="chart" width="${W}" height="${H}" tabindex="0" role="img" aria-label="${cfg.aria}">${g}</svg><div class="tip"></div>`;
+  const svg = host.querySelector("svg"), tip = host.querySelector(".tip"), cross = svg.querySelector(".cross"), mark = svg.querySelector(".mark");
+  let cur = pts.length - 1;
+  const show = (i) => {
+    cur = i;
+    const p = pts[i], px = X(p.d), mv = p[line] ?? p.y;
     cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
-    const markValue = p[lineKey] ?? p.y;
-    if (markValue !== null && markValue !== undefined) {
-      mark.setAttribute("cx", px); mark.setAttribute("cy", Y(markValue)); mark.setAttribute("visibility", "visible");
-    } else mark.setAttribute("visibility", "hidden");
-    const date = document.createElement("div");
-    date.className = "date";
+    if (mv !== null && mv !== undefined) { mark.setAttribute("cx", px); mark.setAttribute("cy", Y(mv)); mark.setAttribute("visibility", "visible"); }
+    const date = document.createElement("div"); date.className = "date";
     date.textContent = `${md(p.d)} 周${WEEK[new Date(p.d + "T00:00:00Z").getUTCDay()]}`;
     tip.replaceChildren(date);
-    cfg.rows.forEach(([key, name, cls]) => { if (p[key] !== null && p[key] !== undefined) tip.append(row(p[key].toFixed(1), name, cls)); });
-    if (p.n) { const note = document.createElement("div"); note.className = "note"; note.textContent = p.n; tip.append(note); }
+    cfg.rows.forEach(([key, name, cls]) => {
+      if (p[key] === null || p[key] === undefined) return;
+      const row = document.createElement("div"), b = document.createElement("b"), k = document.createElement("i"), t = document.createElement("span");
+      b.textContent = p[key].toFixed(1); k.className = "key " + cls; t.textContent = name; row.append(k, b, t); tip.append(row);
+    });
+    if (p.n) { const n = document.createElement("div"); n.className = "note"; n.textContent = p.n; tip.append(n); }
     tip.style.display = "block";
-    const w = tip.offsetWidth;
-    tip.style.left = (px + 14 + w > W ? Math.max(0, px - w - 14) : px + 14) + "px";
-  }
-  function hide() { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); mark.setAttribute("visibility", "hidden"); }
-  function nearest(ev) {
+    tip.style.left = (px + 14 + tip.offsetWidth > W ? Math.max(0, px - tip.offsetWidth - 14) : px + 14) + "px";
+  };
+  const hide = () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); mark.setAttribute("visibility", "hidden"); };
+  const nearest = (ev) => {
     const px = ev.clientX - svg.getBoundingClientRect().left;
     let best = 0, dist = Infinity;
     pts.forEach((p, i) => { const d = Math.abs(X(p.d) - px); if (d < dist) { dist = d; best = i; } });
     show(best);
-  }
-  svg.addEventListener("pointermove", nearest);
-  svg.addEventListener("pointerdown", nearest);
-  svg.addEventListener("pointerleave", hide);
-  svg.addEventListener("focus", () => show(current));
-  svg.addEventListener("blur", hide);
-  svg.addEventListener("keydown", (ev) => {
-    if (ev.key === "ArrowLeft") show(Math.max(0, current - 1));
-    if (ev.key === "ArrowRight") show(Math.min(pts.length - 1, current + 1));
-  });
+  };
+  svg.addEventListener("pointermove", nearest); svg.addEventListener("pointerdown", nearest); svg.addEventListener("pointerleave", hide);
+  svg.addEventListener("focus", () => show(cur)); svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", (ev) => { if (ev.key === "ArrowLeft") show(Math.max(0, cur - 1)); if (ev.key === "ArrowRight") show(Math.min(pts.length - 1, cur + 1)); });
 }
 
 function render(animate) {
   const s = DATA.stats;
-  lineChart($("weight"), {
+  chart($("weight"), {
     points: DATA.points.filter((p) => p.w !== null).map((p) => ({ ...p, y: p.w })),
-    lineKey: "a", dots: true, plan: true, area: true, target: s.target,
+    lineKey: "a", color: "#111111", dotColor: "#ff3a12", surface: "#f6f0e3", gridColor: "#d9d1bf", dots: true, plan: true, target: s.target,
     aria: `体重曲线，7 天平均 ${s.avg7 ?? "暂无"} kg，目标 ${s.target} kg。每天的数值见页面底部表格。`,
     rows: [["a", "7 天平均", ""], ["y", "当天", "dot"], ["p", "计划线", "dash"]],
     emptyText: "记满两天后这里出曲线",
   }, animate);
-  lineChart($("waist"), {
+  chart($("waist"), {
     points: DATA.points.filter((p) => p.v !== null).map((p) => ({ ...p, y: p.v, a: null, p: null })),
-    lineKey: "y", dots: true, dotFill: "var(--s-avg)", minStep: 1,
+    lineKey: "y", color: "#ffe11a", dotColor: "#ffe11a", surface: "#111111", gridColor: "#3a372f", dots: true, minStep: 1,
     aria: `腰围曲线，最新 ${s.waist ?? "暂无"} cm。每次的数值见页面底部表格。`,
     rows: [["y", "腰围", ""]],
     emptyText: "量过两次腰围后这里出曲线",
   }, animate);
 }
 
+function training(text) {
+  const map = { 一: 0, 二: 1, 三: 2, 四: 3, 五: 4, 六: 5, 日: 6, 天: 6 }, days = Array(7).fill("");
+  let hit = false;
+  for (const m of (text || "").matchAll(/周([一二三四五六日天])\s*([^、，,；;\s]*)/g)) { days[map[m[1]]] = m[2] || "练"; hit = true; }
+  const host = $("train");
+  if (!hit) { const d = document.createElement("div"); d.className = "raw-plan"; d.textContent = text || "还没定，对 Agent 说一句"; return host.append(d); }
+  const today = (new Date().getDay() + 6) % 7, box = document.createElement("div");
+  box.className = "days";
+  ["一", "二", "三", "四", "五", "六", "日"].forEach((name, i) => {
+    const c = document.createElement("div"), label = document.createElement("i");
+    c.className = "day" + (days[i] ? " on" : "") + (i === today ? " today" : "");
+    c.style.setProperty("--n", i); c.textContent = name; label.textContent = days[i] || (i === today ? "今天" : "");
+    c.append(label); box.append(c);
+  });
+  host.append(box);
+}
+
 if (DATA.empty) {
   $("nodata").hidden = false;
 } else {
-  const s = DATA.stats;
+  const s = DATA.stats, wk = Object.fromEntries(DATA.week);
   $("app").hidden = false; $("raw").hidden = false; $("chip").hidden = !DATA.example;
   $("weekno").textContent = s.week_no ? `第 ${s.week_no} 周` : "";
-  $("asof").textContent = `数据截至 ${s.last_date}`;
-  $("togo").textContent = s.to_go === null ? "—" : Math.max(0, s.to_go).toFixed(1);
-  setValue($("t1"), s.avg7 === null ? "—" : s.avg7.toFixed(1), s.avg7 === null ? "" : "kg");
-  $("t1s").textContent = s.avg7 === null ? "记满 3 天后出现" : `最新一次 ${s.last_weight.toFixed(1)}`;
-  setValue($("t2"), s.change7 === null ? "—" : signed(s.change7, 2), s.change7 === null ? "" : "kg");
-  $("t2s").textContent = s.change7 === null ? "记满两周后出现" : `计划 ${signed(s.planned_change7, 2)}`;
-  setValue($("t3"), s.waist === null ? "—" : s.waist.toFixed(1), s.waist === null ? "" : "cm");
-  $("t3s").textContent = s.waist_change_from_start === null ? "还没量" : `比起始 ${signed(s.waist_change_from_start)}`;
-  if (s.gap_to_plan === null) { $("t4").textContent = "—"; $("t4s").textContent = "记满 3 天后出现"; }
+  const go = s.to_go === null ? "—" : Math.max(0, s.to_go).toFixed(1), pct = s.progress_pct ?? 0, wide = innerWidth >= 1000;
+  const size = go.length > 3 ? (wide ? 230 : 150) : (wide ? 300 : 196), togo = $("togo"), giant = togo.parentElement;
+  togo.style.setProperty("--size", size + "px");
+  slot(togo, go, "", 500);
+  // 手机字体随机型变，放不下就按实际宽度缩，免得 KG 被切掉
+  const room = giant.clientWidth - (giant.scrollWidth - togo.offsetWidth);
+  if (togo.offsetWidth > room) togo.style.setProperty("--size", size * room / togo.offsetWidth + "px");
+  $("fill").style.setProperty("--pct", pct + "%");
+  $("from").textContent = `起点 ${fmt(s.start_weight)}`;
+  $("pct").textContent = `已走 ${pct}%`;
+  $("to").textContent = `目标 ${fmt(s.target)}`;
+  if (s.change_from_start === null) $("badge").hidden = true;
   else {
-    const g = s.gap_to_plan, close = Math.abs(g) < 0.05;
-    setValue($("t4"), close ? "正好" : `${g < 0 ? "快" : "慢"} ${Math.abs(g).toFixed(1)}`, close ? "" : "kg");
-    $("t4s").textContent = `计划线 ${s.plan_weight.toFixed(1)}`;
+    const lost = s.change_from_start <= 0;
+    $("lost").textContent = (lost ? "−" : "+") + Math.abs(s.change_from_start).toFixed(1);
+    $("aroundText").textContent = (lost ? "已经掉了 KG · " : "比起点多了 KG · ").repeat(2);
   }
-  $("fill").style.width = (s.progress_pct ?? 0) + "%";
-  $("b1").textContent = `起点 ${s.start_weight.toFixed(1)} kg`;
-  $("b2").textContent = `已走 ${s.progress_pct ?? 0}%`;
-  $("b3").textContent = `目标 ${s.target.toFixed(1)} kg${DATA.eta ? " · 预计 " + DATA.eta : ""}`;
-  setValue($("kcal"), DATA.kcal, "kcal");
-  setValue($("protein"), "蛋白 " + DATA.protein, "g");
-  DATA.week.forEach(([k, v]) => {
-    const dt = document.createElement("dt"), dd = document.createElement("dd"), wrap = document.createElement("div");
-    dt.textContent = k; dd.textContent = v; wrap.append(dt, dd); $("week").append(wrap);
-  });
+  const tape = [`还差 ${go} KG`, `已走 ${pct}%`, DATA.eta ? `预计 ${DATA.eta}` : "", s.next_review ? `下次复盘 ${s.next_review}` : "", `数据截至 ${s.last_date}`].filter(Boolean).join(" ★ ") + " ★ ";
+  $("tape").textContent = tape.repeat(6);
+  slot($("kcal"), DATA.kcal || "—", "KCAL", 1500);
+  slot($("protein"), DATA.protein || "—", "G", 1650);
+  slot($("steps"), wk["每天步数"] || "—", "步", 1800);
+  slot($("t1"), fmt(s.avg7), s.avg7 === null ? "" : "KG", 1100);
+  $("t1s").textContent = s.avg7 === null ? "记满 3 天后出现" : `最新一次 ${fmt(s.last_weight)}`;
+  slot($("t2"), signed(s.change7, 2), s.change7 === null ? "" : "KG", 1250);
+  $("t2s").textContent = s.change7 === null ? "记满两周后出现" : `计划 ${signed(s.planned_change7, 2)}`;
+  slot($("t3"), fmt(s.waist), s.waist === null ? "" : "CM", 1400);
+  $("t3s").textContent = s.waist_change_from_start === null ? "还没量" : `比起始 ${signed(s.waist_change_from_start)}`;
+  const g = s.gap_to_plan, close = g !== null && Math.abs(g) < 0.05;
+  slot($("t4"), g === null ? "—" : close ? "正好" : `${g < 0 ? "快" : "慢"} ${Math.abs(g).toFixed(1)}`, g === null || close ? "" : "KG", 1550);
+  $("t4s").textContent = g === null ? "记满 3 天后出现" : `计划线 ${fmt(s.plan_weight)}`;
+  $("split").textContent = DATA.split;
+  training(wk["力量训练"]);
+  $("focus").textContent = wk["这周重点"] || "还没定";
   [...DATA.points].reverse().forEach((p) => {
     const tr = document.createElement("tr");
-    [p.d, p.w?.toFixed(1), p.a?.toFixed(1), p.p?.toFixed(1), p.v?.toFixed(1), p.n].forEach((v) => {
-      const td = document.createElement("td"); td.textContent = v ?? ""; tr.append(td);
-    });
+    [p.d, p.w?.toFixed(1), p.a?.toFixed(1), p.p?.toFixed(1), p.v?.toFixed(1), p.n].forEach((v) => { const td = document.createElement("td"); td.textContent = v ?? ""; tr.append(td); });
     $("rows").append(tr);
   });
   $("openraw").addEventListener("click", () => { $("raw").open = true; });
-  render(true);
+  $("replay").addEventListener("click", () => location.reload());
+  render(!STILL);
   let frame;
   addEventListener("resize", () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => render(false)); });
 }
